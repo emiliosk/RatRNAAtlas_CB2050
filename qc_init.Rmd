@@ -1,0 +1,480 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+
+library(tidyverse)
+library(ggplot2)
+library(pheatmap)
+library(plotly)
+library(ggplotify)
+library(ggalluvial)
+library(patchwork)
+library(pcaMethods)
+library(uwot)
+library(ggrepel)
+
+select = dplyr::select
+```
+
+```{r}
+tmm_sample_init <- read_csv("./data/initial_dataset/pTMM_rattus_norvegicus_v103.csv")
+metadata_init <- read_csv("./data/initial_dataset/metadata.csv")
+
+tpm_sample_init <- read_csv("./data/initial_dataset/pTPM_rattus_norvegicus_v103.csv")
+
+all(sort(colnames(tmm_sample_init %>% select(-1))) == sort(metadata_init$ID))
+all(sort(colnames(tpm_sample_init %>% select(-1))) == sort(metadata_init$ID))
+
+
+
+if(file.exists("./data/initial_dataset/spearman_sample.csv")) {
+  sample_tmm_spearman <- read_csv("./data/initial_dataset/spearman_sample.csv")
+} else {
+  sample_tmm_spearman <-  tmm_sample_init %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "sample_name")
+  write_csv(sample_tmm_spearman,"./data/initial_dataset/spearman_sample.csv")
+}
+
+tmm_tissue_init <- tmm_sample_init %>% 
+  gather(sample, tmm, -1) %>% 
+  left_join(metadata_init %>% select(ID,tissue_name), by = c("sample" = "ID")) %>% 
+  group_by(target_id, tissue_name) %>% 
+  summarize(tmm = mean(tmm)) %>% 
+  ungroup()
+
+
+
+if(file.exists("./data/initial_dataset/spearman_corr_tissues.csv")) {
+  tissue_tmm_spearman <- read_csv("./data/initial_dataset/spearman_corr_tissues.csv")
+} else {
+  tissue_tmm_spearman <-  tmm_tissue_init %>%
+    spread(tissue_name, tmm) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "tissue_name")
+  write_csv(tissue_tmm_spearman,"./data/initial_dataset/spearman_corr_tissues.csv")
+}
+
+
+```
+
+
+#functions
+```{r}
+
+hclust4RNAseq <- function(df, correlation_method = "spearman"){
+  #wide dataframe as input 
+  #to get correlation between samples, where rows are genes columns are samples
+  #to get correlation between genes across samples, input df with genes as columns
+  #can use later for dendogram making: ggdendrogram([hclust4RNAseq_results], rotate = FALSE, size = 10, face = "bold")
+  similarity <- cor(df, method=correlation_method, use="pairwise.complete.obs")
+  dissimilarity <- 1 - similarity
+  hcl <- hclust(as.dist(dissimilarity), "average")
+  return (hcl)
+} 
+
+
+
+# highlight_pca_plt <- function(pca_data, metadata_init, element, hierarchy_name){
+#   pca_data %>%
+#   scores() %>%
+#   as_tibble(rownames = "sample_id") %>%
+#   left_join(metadata_init,
+#             by = c("sample_id" = "ID")) %>%
+#   mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+#                            TRUE ~ "#000000")) %>%
+#   ggplot(aes(PC1, PC2,  colour = Color)) +
+#   geom_point(alpha = 0.6) +
+#   #geom_text(aes(label = sample_id), vjust = 1,hjust = 0, nudge_y =-1) +
+#   xlab(paste("PC1", all_pca@R2[1] * 100, "% of the variance")) +
+#   ylab(paste("PC2", all_pca@R2[2] * 100, "% of the variance")) +
+#   scale_color_identity() +ggtitle (paste(higher_h))
+#
+# }
+
+
+
+highlight_pca_plt <-
+  function(pca_data,
+           metadata_init,
+           element,
+           hierarchy_name) {
+    plot_data <- pca_data %>%
+      scores() %>%
+      as_tibble(rownames = "sample_id") %>%
+      left_join(metadata_init,
+                by = c("sample_id" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(PC1, PC2,  colour = Color),
+                 alpha = 0.6) +
+      xlab(paste("PC1", all_pca@R2[1] * 100, "% of the variance")) +
+      ylab(paste("PC2", all_pca@R2[2] * 100, "% of the variance")) +
+      scale_color_identity() +
+      ggtitle (paste0(higher_h, ", PCA: TMM expression values")) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(PC1, PC2, label = sample_id))
+    
+    
+  }
+
+
+
+group_to_individual_corr <- function (lower_h_spearman, higher_h, typeof_higher_h, higher_h_spearman, metadata_init,tmm_data_lower_h, tmm_data_higher_h, topN = 10){
+  #lower_h_spearman: spearman correlation of lower hierarchy tmm data, e.g. on the sample level
+  #higher_h: name of variable inside the higher hierarchy you want to check the lower correlation to, e.g. "cervix"
+  #type of_higher_h: name of the higher hierarchy, e.g. tissue_name
+  #higher_h_spearman: spearman correlation of higher hierarchy tmm data, e.g. on the tissue level
+  #metadata_init containing the relations of samples to the hierarchy
+  #tmm_data_lower_h, wide formate, containing target_id for names of genes, samples are columns
+  #tmm_data_higher_h higher hierarchy
+  top_hh_names <- tissue_tmm_spearman %>% select(1, higher_h) %>% arrange(desc(.[[2]])) %>% select(1) %>% pull() %>% .[1:topN]
+  low_hh_names <- metadata_init$ID[metadata_init[[typeof_higher_h]] == higher_h]
+  data_4_cor <- tmm_data_lower_h %>% select(c(target_id, low_hh_names)) %>% 
+    left_join(tmm_data_higher_h %>% select(target_id,top_hh_names), by = "target_id")
+  local_spearman <- data_4_cor %>% 
+    column_to_rownames("target_id") %>% 
+    cor(method="spearman", use="pairwise.complete.obs") %>%  
+    as.data.frame() %>% 
+    select(-low_hh_names)
+  plot_data <- local_spearman %>% 
+    rownames_to_column("samples") %>% 
+    gather("tissue","correlation", -1)
+  plot_data<- plot_data[plot_data$samples %in% low_hh_names,]
+  plot_data$tissue <- factor(plot_data$tissue, levels = top_hh_names)
+  ggplot(plot_data, aes(tissue, samples, fill = correlation)) + 
+    geom_tile() + scale_fill_viridis_c(name = "Spearman rho") + theme_minimal() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(), axis.text.x = element_text(angle = 45, hjust = 0,margin = margin(r = 0))) + scale_x_discrete(position = 'top') + xlab("") + ylab("") + ggtitle (paste("Tissue group to sample correlation"))
+}
+
+HPA_UMAP <- 
+  function(wide_data, 
+           seed = 42,
+           filter_zero_sd = F,
+           n_epochs = 500,
+           n_neighbors = 15) {
+    
+    set.seed(seed)
+    
+    if(filter_zero_sd) {
+      row_sd <- 
+        wide_data %>% 
+        column_to_rownames(colnames(wide_data)[1]) %>% 
+        apply(MARGIN = 1, 
+              sd)
+      wide_data <- 
+        wide_data %>% 
+        slice(which(row_sd != 0))
+    }
+    
+    pca_res <- 
+      wide_data %>%  mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+      column_to_rownames(colnames(wide_data)[1]) %>% 
+      scale() %>% 
+      t() %>% 
+      pca(nPcs = dim(.)[1])
+    
+    
+    pc_lim <- 
+      which(pca_res@R2cum > 0.8)[1]
+    
+    pc_lim_sd <- 
+      rev(which(pca_res@sDev > 1))[1]
+    
+    pca_res@scores[,1:pc_lim] %>% 
+      umap(n_neighbors = n_neighbors,
+           n_epochs = n_epochs) %>% 
+      as_tibble() %>% 
+      set_names(paste0("UMAP", 1:ncol(.))) %>% 
+      mutate(sample = rownames(pca_res@scores)) %>% 
+      select(sample, everything())
+  }
+
+
+
+
+# highlight_umap_plt <- function(umap_res, metadata_init, element, hierarchy_name){
+#   #umap_res <- HPA_UMAP(wide_data)
+#   umap_res %>%
+#     left_join(metadata_init,by = c("sample" = "ID")) %>%
+#     mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+#                              TRUE ~ "#000000")) %>%
+#     ggplot(aes(UMAP1, UMAP2,  colour = Color)) +
+#     geom_point(alpha = 0.6) +
+#     scale_color_identity() + ggtitle (paste(element))
+# }
+
+highlight_umap_plt <-
+  function(umap_res,
+           metadata_init,
+           element,
+           hierarchy_name) {
+    #umap_res <- HPA_UMAP(wide_data)
+    plot_data <- umap_res %>%
+      left_join(metadata_init, by = c("sample" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(UMAP1, UMAP2,  color = Color),
+                 alpha = 0.3) +
+      geom_point(alpha = 0.3) +
+      scale_color_identity() + ggtitle (paste0(element, ", UMAP: TMM expression values")) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(UMAP1, UMAP2, label = sample))
+  }
+
+sp_distance_plot <- function (lower_h_tmm, higher_h, higher_h_name, metadata_init){
+  #lower_h_tmm <- tmmm ; expression values at the lower hierarchy, in this case at sample level
+  #higher_h <- "skin (eye)" ; name of higher hierarchy, in this case tissue_name
+  #higher_h_name <-  "tissue_name" ; higher hierarchy name, column name of the higher hierarchy
+  #metadata_init <- metadata_init
+  low_hh_names <- metadata_init$ID[metadata_init[[higher_h_name]] == higher_h]
+  spearman_cor <- lower_h_tmm %>%
+    select(c(target_id, low_hh_names)) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame()
+  dissimilarity <- (1 - spearman_cor) %>%
+    rownames_to_column("ID_1") %>%
+    gather(ID_2, distance, -1)
+  ggplot(dissimilarity, aes(ID_1, ID_2, fill = distance)) +
+    geom_tile() + scale_fill_gradient( name = "spearman distance \n 1-rho", ) + theme_minimal() +
+    theme(
+      panel.border = element_blank(),
+      panel.grid.major = element_blank(),
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 0,
+        margin = margin(r = 0)
+      )
+    ) + scale_x_discrete(position = 'top') + xlab("") + ylab("") + ggtitle (paste("In tissue sample to sample Spearman Distance"))
+}
+
+
+vln_tmm_tpm_plt <- function(metadata_init, higher_h_name, higher_h, lower_h_tmm, lower_h_tpm){
+  lower_h <- metadata_init[metadata_init[[higher_h_name]] == higher_h,]$ID
+  sel_lower_h_tmm <- lower_h_tmm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tmm_val,-1)
+  sel_lower_h_tpm <- lower_h_tpm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tpm_val,-1)
+  plot_data <-
+    left_join(sel_lower_h_tmm,
+              sel_lower_h_tpm,
+              by = c("target_id" = "target_id", "sample" = "sample")) %>% 
+    gather(type, expression,-1,-2) %>% 
+    mutate_if(is.numeric, function(x) {
+                log10(x + 1)
+              }) %>% rename(log_exp = expression) %>%
+    ggplot(aes(sample, log_exp, fill = type)) + 
+    geom_violin(draw_quantiles = 0.5) +
+    ylab ("log10(expression+1)") + xlab("") + 
+    ggtitle (paste(higher_h)) + 
+    scale_fill_manual(values = c("#999999", "#E69F00")) + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+}
+
+expression_barplt <- function(lower_h_tmm, higher_h, higher_h_name, metadata_init){
+  lower_h <- metadata_init[metadata_init[[higher_h_name]] == higher_h,]$ID
+  long_TMM <- lower_h_tmm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tmm_value,-1)
+  
+  plot_data <- long_TMM %>%
+    group_by(sample) %>%
+    summarize(n_over_1 = sum(tmm_value >= 1),
+              n_over_0 = sum(tmm_value > 0))
+  
+  plot_data %>%
+    arrange(n_over_1) %>%
+    mutate(sample = factor(sample, sample)) %>%
+    ggplot(aes(sample, n_over_1)) +
+    geom_col() +
+    ylab ("n(genes) >= 1 TMM") + xlab("") + ggtitle (paste(higher_h)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+    
+}
+
+
+```
+
+#test
+```{r}
+all_pca <- tmm_sample_init %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+umap_res <- HPA_UMAP(wide_data = tmm_sample_init, 
+           seed = 4,
+           filter_zero_sd = F,
+           n_epochs = 1000,
+           n_neighbors = 15)
+
+higher_h <- "subcutaneous adipose tissue"
+higher_h_name <-  "tissue_name"
+
+
+p1 <-
+  highlight_pca_plt(
+    pca_data = all_pca,
+    metadata_init = metadata_init,
+    element = higher_h,
+    hierarchy_name = higher_h_name
+  )
+
+p2 <-
+  highlight_umap_plt(
+    umap_res = umap_res,
+    metadata_init = metadata_init,
+    element = higher_h,
+    hierarchy_name = higher_h_name
+  )
+
+p3 <-
+  group_to_individual_corr (
+    lower_h_spearman = sample_tmm_spearman,
+    higher_h = higher_h,
+    typeof_higher_h = higher_h_name,
+    higher_h_spearman = tissue_tmm_spearman,
+    metadata_init = metadata_init,
+    tmm_data_lower_h = tmm_sample_init,
+    tmm_data_higher_h =  tmm_tissue_init %>% spread(tissue_name, tmm),
+    topN = 10
+  ) 
+
+
+p4 <-
+  sp_distance_plot(
+    lower_h_tmm = tmm_sample_init,
+    higher_h = higher_h,
+    higher_h_name = higher_h_name,
+    metadata_init = metadata_init
+  )
+
+p5 <-
+  expression_barplt(
+    lower_h_tmm = tmm_sample_init,
+    higher_h = higher_h,
+    higher_h_name = higher_h_name,
+    metadata_init = metadata_init
+  ) 
+
+p6 <-
+  vln_tmm_tpm_plt(
+    metadata_init = metadata_init,
+    higher_h_name = higher_h_name,
+    higher_h = higher_h,
+    lower_h_tmm = tmm_sample_init,
+    lower_h_tpm = tpm_sample_init
+  )
+
+
+(p1 + p2) / (p3 + p4) / (p5 + p6) 
+
+# 
+ggsave("eg_plot.pdf", height = 15, width = 15)
+# 
+# p4
+# p5
+# p6
+
+```
+#actual export
+```{r}
+
+all_pca <- tmm_sample_init %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+umap_res <- HPA_UMAP(wide_data = tmm_sample_init, 
+           seed = 4,
+           filter_zero_sd = F,
+           n_epochs = 1000,
+           n_neighbors = 15)
+
+for (tissue_name in metadata_init$tissue_name %>% unique()) {
+  higher_h <- tissue_name
+  higher_h_name <-  "tissue_name"
+  p1 <-
+    highlight_pca_plt(
+      pca_data = all_pca,
+      metadata_init = metadata_init,
+      element = higher_h,
+      hierarchy_name = higher_h_name
+    )
+  
+  p2 <-
+    highlight_umap_plt(
+      umap_res = umap_res,
+      metadata_init = metadata_init,
+      element = higher_h,
+      hierarchy_name = higher_h_name
+    )
+  
+  p3 <-
+    group_to_individual_corr (
+      lower_h_spearman = sample_tmm_spearman,
+      higher_h = higher_h,
+      typeof_higher_h = higher_h_name,
+      higher_h_spearman = tissue_tmm_spearman,
+      metadata_init = metadata_init,
+      tmm_data_lower_h = tmm_sample_init,
+      tmm_data_higher_h =  tmm_tissue_init %>% spread(tissue_name, tmm),
+      topN = 10
+    )
+  
+  
+  p4 <-
+    sp_distance_plot(
+      lower_h_tmm = tmm_sample_init,
+      higher_h = higher_h,
+      higher_h_name = higher_h_name,
+      metadata_init = metadata_init
+    )
+  
+  p5 <-
+    expression_barplt(
+      lower_h_tmm = tmm_sample_init,
+      higher_h = higher_h,
+      higher_h_name = higher_h_name,
+      metadata_init = metadata_init
+    )
+  
+  p6 <-
+    vln_tmm_tpm_plt(
+      metadata_init = metadata_init,
+      higher_h_name = higher_h_name,
+      higher_h = higher_h,
+      lower_h_tmm = tmm_sample_init,
+      lower_h_tpm = tpm_sample_init
+    )
+  
+  (p1 + p2) / (p3 + p4) / (p5 + p6)
+  
+  
+  ggsave(
+    paste0("./final_plots/QC_init/", tissue_name, ".pdf"),
+    height = 15,
+    width = 15
+  )
+}
+
+```

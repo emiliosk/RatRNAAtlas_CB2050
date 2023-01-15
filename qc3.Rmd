@@ -1,0 +1,1021 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+
+
+library(tidyverse)
+library(ggplot2)
+library(pheatmap)
+library(plotly)
+library(ggplotify)
+library(ggalluvial)
+library(patchwork)
+library(pcaMethods)
+library(uwot)
+library(ggrepel)
+
+
+select <- dplyr::select
+dim(tmm_sample)
+tmm_sample %>%
+  gather(sample, tmm, -1) %>%
+  mutate(detected = tmm >= 1) %>%
+  select(-tmm) %>%
+  group_by(target_id) %>%
+  summarise(sum = sum(detected)) %>%
+  filter(sum >= 1)
+
+tmm_sample %>% 
+  gather(sample, tmm, -1) %>% 
+  mutate(detected = tmm > 1) %>% 
+  select(-tmm) %>% 
+  group_by(sample) %>% 
+  summarise(sum = sum(detected)) %>% 
+  arrange(sum)
+
+tmm_sample_init <- read_csv("./data/initial_dataset/pTMM_rattus_norvegicus_v103.csv")
+dim(tmm_sample_init)
+tmm_sample_init %>%
+  gather(sample, tmm, -1) %>%
+  mutate(detected = tmm > 1) %>%
+  select(-tmm) %>%
+  group_by(target_id) %>%
+  summarise(sum = sum(detected)) %>%
+  filter(sum >= 1)
+
+
+tmm_tissue %>% mutate(boolean = tmm >= 1) %>% group_by(target_id) %>% summarize(sum = sum(boolean)) %>% filter(sum >0)
+```
+
+#import
+```{r}
+
+tmm_sample <- read_csv("./data/final_data/curated_pTMM_rattus_norvegicus_v103.csv")
+metadata <- read_csv("./data/final_data/curated_metadata.csv")
+all(sort(colnames(tmm_sample[-1])) == sort(metadata$ID))
+
+tpm_sample <-read_csv("./data/final_data/curated_pTPM_rattus_norvegicus_v103.csv")
+
+tmm_tissue <- read_csv("./data/final_data/final_tmm_tissue_name.csv")
+tmm_region_tissue <- read_csv("./data/final_data/final_tmm_region_tissue_name.csv")
+tmm_consensus_tissue <-  read_csv("./data/final_data/final_tmm_consensus_name.csv")
+
+
+if(file.exists("./data/final_data/spearman_sample.csv")) {
+  sample_tmm_spearman <- read_csv("./data/final_data/spearman_sample.csv")
+} else {
+  sample_tmm_spearman <-  tmm_sample %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "sample_name")
+  write_csv(sample_tmm_spearman,"./data/final_data/spearman_sample.csv")
+}
+
+if(file.exists("./data/final_data/spearman_corr_tissues.csv")) {
+  tissue_tmm_spearman <- read_csv("./data/final_data/spearman_corr_tissues.csv")
+} else {
+  tissue_tmm_spearman <-  tmm_tissue %>%
+    spread(tissue_name, tmm) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "tissue_name")
+  write_csv(tissue_tmm_spearman,"./data/final_data/spearman_corr_tissues.csv")
+}
+
+#consensus level
+
+if(file.exists("./data/final_data/spearman_corr_consensus_tissues.csv")) {
+  consensus_tmm_spearman <- read_csv("./data/final_data/spearman_corr_consensus_tissues.csv")
+} else {
+  consensus_tmm_spearman <-  tmm_consensus_tissue %>% 
+    spread(consensus_tissue_name, tmm) %>% 
+    column_to_rownames("target_id") %>% 
+    cor(method="spearman", use="pairwise.complete.obs") %>% 
+    as.data.frame() %>% 
+    as_tibble(rownames = "consensus_tissue_name")
+  write_csv(consensus_tmm_spearman,"./data/final_data/spearman_corr_consensus_tissues.csv")
+}
+
+length(metadata$consensus_tissue_name %>%  unique())
+```
+#Expression comparison
+```{r}
+
+sample_subset_ID <- metadata[match(unique(metadata$consensus_tissue_name), metadata$consensus_tissue_name),] %>% select(ID)
+sample_subset_tmm <- tmm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tmm, -1)
+sample_subset_tpm <- tpm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tpm, -1)
+
+# plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+#   mutate(log1p_tmm = log10(tmm + 1), log1p_tpm = log10(tpm +1)) %>% select(-tmm, -tpm) %>% 
+#   gather(expression_type, expression, -1, -2) %>% 
+#   left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+  gather(expression_type, expression, -1, -2) %>% mutate_if(is.numeric, function(x) {
+                log10(x + 1)
+              }) %>% 
+  left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+
+pal_tbl <- metadata %>% select(consensus_tissue_name, consensus_tissue_color) %>% distinct()
+pal <- pal_tbl %>% pull(consensus_tissue_color)
+pal <- setNames(pal, pal_tbl %>% pull(consensus_tissue_name))
+
+
+ggplot(data = plot_data, aes(x = expression, y =sample, fill = consensus_tissue_name)) +
+  geom_boxplot(draw_quantiles = 0.5, outlier.size = 0.5, outlier.alpha = 0.3)+
+  facet_wrap(~expression_type)+
+  scale_fill_manual(values = pal) +
+  theme(legend.position = "none", 
+        axis.title = element_blank())
+
+ggsave("./final_plots/tpm_tmm_comp_boxplot.pdf", width=7, height = 12)
+
+```
+
+```{r}
+
+sample_subset_ID <- metadata[match(unique(metadata$organ_name), metadata$organ_name),] %>% select(ID)
+sample_subset_tmm <- tmm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tmm, -1)
+sample_subset_tpm <- tpm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tpm, -1)
+# 
+# plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+#   mutate(log1p_tmm = log10(tmm + 1), log1p_tpm = log10(tpm +1)) %>% select(-tmm, -tpm) %>% 
+#   gather(expression_type, expression, -1, -2) %>% 
+#   left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+  gather(expression_type, expression, -1, -2) %>% mutate_if(is.numeric, function(x) {
+                log10(x + 1)
+              }) %>% 
+  left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+
+pal_tbl <- metadata %>% select(consensus_tissue_name, consensus_tissue_color) %>% distinct()
+pal <- pal_tbl %>% pull(consensus_tissue_color)
+pal <- setNames(pal, pal_tbl %>% pull(consensus_tissue_name))
+
+
+ggplot(data = plot_data, aes(x = expression, y =sample, fill = consensus_tissue_name)) +
+  #geom_violin(draw_quantiles = 0.5)+
+  geom_boxplot(draw_quantiles = 0.5, outlier.size = 0.5, outlier.alpha = 0.3)+
+  facet_wrap(~expression_type)+
+  scale_fill_manual(values = pal) +
+  theme(legend.position = "none")
+
+ggsave("./final_plots/tpm_tmm_comp_short_boxplot.pdf", width=5, height = 5)
+
+```
+
+
+
+#functions
+```{r}
+
+hclust4RNAseq <- function(df, correlation_method = "spearman"){
+  #wide dataframe as input 
+  #to get correlation between samples, where rows are genes columns are samples
+  #to get correlation between genes across samples, input df with genes as columns
+  #can use later for dendogram making: ggdendrogram([hclust4RNAseq_results], rotate = FALSE, size = 10, face = "bold")
+  similarity <- cor(df, method=correlation_method, use="pairwise.complete.obs")
+  dissimilarity <- 1 - similarity
+  hcl <- hclust(as.dist(dissimilarity), "average")
+  return (hcl)
+} 
+
+
+
+# highlight_pca_plt <- function(pca_data, metadata, element, hierarchy_name){
+#   pca_data %>%
+#   scores() %>%
+#   as_tibble(rownames = "sample_id") %>%
+#   left_join(metadata,
+#             by = c("sample_id" = "ID")) %>%
+#   mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+#                            TRUE ~ "#000000")) %>%
+#   ggplot(aes(PC1, PC2,  colour = Color)) +
+#   geom_point(alpha = 0.6) +
+#   #geom_text(aes(label = sample_id), vjust = 1,hjust = 0, nudge_y =-1) +
+#   xlab(paste("PC1", all_pca@R2[1] * 100, "% of the variance")) +
+#   ylab(paste("PC2", all_pca@R2[2] * 100, "% of the variance")) +
+#   scale_color_identity() +ggtitle (paste(higher_h))
+#
+# }
+
+
+
+highlight_pca_plt <-
+  function(pca_data,
+           metadata,
+           element,
+           hierarchy_name) {
+    plot_data <- pca_data %>%
+      scores() %>%
+      as_tibble(rownames = "sample_id") %>%
+      left_join(metadata,
+                by = c("sample_id" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(PC1, PC2,  colour = Color),
+                 alpha = 0.6) +
+      xlab(paste("PC1", all_pca@R2[1] * 100, "% of the variance")) +
+      ylab(paste("PC2", all_pca@R2[2] * 100, "% of the variance")) +
+      scale_color_identity() +
+      ggtitle (paste0(higher_h, ", PCA: TMM expression values")) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(PC1, PC2, label = sample_id))
+    
+    
+  }
+
+
+
+group_to_individual_corr <- function (lower_h_spearman, higher_h, typeof_higher_h, higher_h_spearman, metadata,tmm_data_lower_h, tmm_data_higher_h, topN = 10){
+  #lower_h_spearman: spearman correlation of lower hierarchy tmm data, e.g. on the sample level
+  #higher_h: name of variable inside the higher hierarchy you want to check the lower correlation to, e.g. "cervix"
+  #type of_higher_h: name of the higher hierarchy, e.g. tissue_name
+  #higher_h_spearman: spearman correlation of higher hierarchy tmm data, e.g. on the tissue level
+  #metadata containing the relations of samples to the hierarchy
+  #tmm_data_lower_h, wide formate, containing target_id for names of genes, samples are columns
+  #tmm_data_higher_h higher hierarchy
+  top_hh_names <- tissue_tmm_spearman %>% select(1, higher_h) %>% arrange(desc(.[[2]])) %>% select(1) %>% pull() %>% .[1:topN]
+  low_hh_names <- metadata$ID[metadata[[typeof_higher_h]] == higher_h]
+  data_4_cor <- tmm_data_lower_h %>% select(c(target_id, low_hh_names)) %>% 
+    left_join(tmm_data_higher_h %>% select(target_id,top_hh_names), by = "target_id")
+  local_spearman <- data_4_cor %>% 
+    column_to_rownames("target_id") %>% 
+    cor(method="spearman", use="pairwise.complete.obs") %>%  
+    as.data.frame() %>% 
+    select(-low_hh_names)
+  plot_data <- local_spearman %>% 
+    rownames_to_column("samples") %>% 
+    gather("tissue","correlation", -1)
+  plot_data<- plot_data[plot_data$samples %in% low_hh_names,]
+  plot_data$tissue <- factor(plot_data$tissue, levels = top_hh_names)
+  ggplot(plot_data, aes(tissue, samples, fill = correlation)) + 
+    geom_tile() + scale_fill_viridis_c(name = "Spearman rho") + theme_minimal() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(), axis.text.x = element_text(angle = 45, hjust = 0,margin = margin(r = 0))) + scale_x_discrete(position = 'top') + xlab("") + ylab("") + ggtitle (paste("Tissue group to sample correlation"))
+}
+
+HPA_UMAP <- 
+  function(wide_data, 
+           seed = 42,
+           filter_zero_sd = F,
+           n_epochs = 500,
+           n_neighbors = 15) {
+    
+    set.seed(seed)
+    
+    if(filter_zero_sd) {
+      row_sd <- 
+        wide_data %>% 
+        column_to_rownames(colnames(wide_data)[1]) %>% 
+        apply(MARGIN = 1, 
+              sd)
+      wide_data <- 
+        wide_data %>% 
+        slice(which(row_sd != 0))
+    }
+    
+    pca_res <- 
+      wide_data %>%  mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+      column_to_rownames(colnames(wide_data)[1]) %>% 
+      scale() %>% 
+      t() %>% 
+      pca(nPcs = dim(.)[1])
+    
+    
+    pc_lim <- 
+      which(pca_res@R2cum > 0.8)[1]
+    
+    pc_lim_sd <- 
+      rev(which(pca_res@sDev > 1))[1]
+    
+    pca_res@scores[,1:pc_lim] %>% 
+      umap(n_neighbors = n_neighbors,
+           n_epochs = n_epochs) %>% 
+      as_tibble() %>% 
+      set_names(paste0("UMAP", 1:ncol(.))) %>% 
+      mutate(sample = rownames(pca_res@scores)) %>% 
+      select(sample, everything())
+  }
+
+
+
+
+# highlight_umap_plt <- function(umap_res, metadata, element, hierarchy_name){
+#   #umap_res <- HPA_UMAP(wide_data)
+#   umap_res %>%
+#     left_join(metadata,by = c("sample" = "ID")) %>%
+#     mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+#                              TRUE ~ "#000000")) %>%
+#     ggplot(aes(UMAP1, UMAP2,  colour = Color)) +
+#     geom_point(alpha = 0.6) +
+#     scale_color_identity() + ggtitle (paste(element))
+# }
+
+highlight_umap_plt <-
+  function(umap_res,
+           metadata,
+           element,
+           hierarchy_name) {
+    #umap_res <- HPA_UMAP(wide_data)
+    plot_data <- umap_res %>%
+      left_join(metadata, by = c("sample" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(UMAP1, UMAP2,  color = Color),
+                 alpha = 0.3) +
+      geom_point(alpha = 0.3) +
+      scale_color_identity() + ggtitle (paste0(element, ", UMAP: TMM expression values")) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(UMAP1, UMAP2, label = sample))
+  }
+
+sp_distance_plot <- function (lower_h_tmm, higher_h, higher_h_name, metadata){
+  #lower_h_tmm <- tmmm ; expression values at the lower hierarchy, in this case at sample level
+  #higher_h <- "skin (eye)" ; name of higher hierarchy, in this case tissue_name
+  #higher_h_name <-  "tissue_name" ; higher hierarchy name, column name of the higher hierarchy
+  #metadata <- metadata
+  low_hh_names <- metadata$ID[metadata[[higher_h_name]] == higher_h]
+  spearman_cor <- lower_h_tmm %>%
+    select(c(target_id, low_hh_names)) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame()
+  dissimilarity <- (1 - spearman_cor) %>%
+    rownames_to_column("ID_1") %>%
+    gather(ID_2, distance, -1)
+  ggplot(dissimilarity, aes(ID_1, ID_2, fill = distance)) +
+    geom_tile() + scale_fill_gradient( name = "spearman distance \n 1-rho", ) + theme_minimal() +
+    theme(
+      panel.border = element_blank(),
+      panel.grid.major = element_blank(),
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 0,
+        margin = margin(r = 0)
+      )
+    ) + scale_x_discrete(position = 'top') + xlab("") + ylab("") + ggtitle (paste("In tissue sample to sample Spearman Distance"))
+}
+
+
+vln_tmm_tpm_plt <- function(metadata, higher_h_name, higher_h, lower_h_tmm, lower_h_tpm){
+  lower_h <- metadata[metadata[[higher_h_name]] == higher_h,]$ID
+  sel_lower_h_tmm <- lower_h_tmm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tmm_val,-1)
+  sel_lower_h_tpm <- lower_h_tpm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tpm_val,-1)
+  plot_data <-
+    left_join(sel_lower_h_tmm,
+              sel_lower_h_tpm,
+              by = c("target_id" = "target_id", "sample" = "sample")) %>% 
+    gather(type, expression,-1,-2) %>% 
+    mutate_if(is.numeric, function(x) {
+                log10(x + 1)
+              }) %>% rename(log_exp = expression) %>%
+    ggplot(aes(sample, log_exp, fill = type)) + 
+    geom_violin(draw_quantiles = 0.5) +
+    ylab ("log10(expression+1)") + xlab("") + 
+    ggtitle (paste(higher_h)) + 
+    scale_fill_manual(values = c("#999999", "#E69F00")) + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+}
+
+expression_barplt <- function(lower_h_tmm, higher_h, higher_h_name, metadata){
+  lower_h <- metadata[metadata[[higher_h_name]] == higher_h,]$ID
+  long_TMM <- lower_h_tmm %>%
+    select(c(target_id, lower_h)) %>%
+    gather(sample, tmm_value,-1)
+  
+  plot_data <- long_TMM %>%
+    group_by(sample) %>%
+    summarize(n_over_1 = sum(tmm_value >= 1),
+              n_over_0 = sum(tmm_value > 0))
+  
+  plot_data %>%
+    arrange(n_over_1) %>%
+    mutate(sample = factor(sample, sample)) %>%
+    ggplot(aes(sample, n_over_1)) +
+    geom_col() +
+    ylab ("n(genes) >= 1 TMM") + xlab("") + ggtitle (paste(higher_h)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+    
+}
+
+```
+
+#test
+```{r}
+all_pca <- tmm_sample %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+umap_res <- HPA_UMAP(wide_data = tmm_sample, 
+           seed = 4,
+           filter_zero_sd = F,
+           n_epochs = 1000,
+           n_neighbors = 15)
+
+higher_h <- "cingulate-retrosplenial cortex"
+higher_h_name <-  "tissue_name"
+
+
+p1 <-
+  highlight_pca_plt(
+    pca_data = all_pca,
+    metadata = metadata,
+    element = higher_h,
+    hierarchy_name = higher_h_name
+  )
+
+p2 <-
+  highlight_umap_plt(
+    umap_res = umap_res,
+    metadata = metadata,
+    element = higher_h,
+    hierarchy_name = higher_h_name
+  )
+
+p3 <-
+  group_to_individual_corr (
+    lower_h_spearman = sample_tmm_spearman,
+    higher_h = higher_h,
+    typeof_higher_h = higher_h_name,
+    higher_h_spearman = tissue_tmm_spearman,
+    metadata = metadata,
+    tmm_data_lower_h = tmm_sample,
+    tmm_data_higher_h =  tmm_tissue %>% spread(tissue_name, tmm),
+    topN = 10
+  )
+
+
+p4 <-
+  sp_distance_plot(
+    lower_h_tmm = tmm_sample,
+    higher_h = higher_h,
+    higher_h_name = higher_h_name,
+    metadata = metadata
+  )
+
+p5 <-
+  expression_barplt(
+    lower_h_tmm = tmm_sample,
+    higher_h = higher_h,
+    higher_h_name = higher_h_name,
+    metadata = metadata
+  )
+
+p6 <-
+  vln_tmm_tpm_plt(
+    metadata = metadata,
+    higher_h_name = higher_h_name,
+    higher_h = higher_h,
+    lower_h_tmm = tmm_sample,
+    lower_h_tpm = tpm_sample
+  )
+
+
+(p1 + p2) / (p3 + p4) / (p5 + p6)
+
+
+ggsave("eg_plot.pdf", height = 15, width = 15)
+
+p4
+p5
+p6
+
+```
+#actual export
+```{r}
+
+
+all_pca <- tmm_sample %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+umap_res <- HPA_UMAP(wide_data = tmm_sample, 
+           seed = 4,
+           filter_zero_sd = F,
+           n_epochs = 1000,
+           n_neighbors = 15)
+
+for (tissue_name in metadata$tissue_name %>% unique()) {
+  higher_h <- tissue_name
+  higher_h_name <-  "tissue_name"
+  p1 <-
+    highlight_pca_plt(
+      pca_data = all_pca,
+      metadata = metadata,
+      element = higher_h,
+      hierarchy_name = higher_h_name
+    )
+  
+  p2 <-
+    highlight_umap_plt(
+      umap_res = umap_res,
+      metadata = metadata,
+      element = higher_h,
+      hierarchy_name = higher_h_name
+    )
+  
+  p3 <-
+    group_to_individual_corr (
+      lower_h_spearman = sample_tmm_spearman,
+      higher_h = higher_h,
+      typeof_higher_h = higher_h_name,
+      higher_h_spearman = tissue_tmm_spearman,
+      metadata = metadata,
+      tmm_data_lower_h = tmm_sample,
+      tmm_data_higher_h =  tmm_tissue %>% spread(tissue_name, tmm),
+      topN = 10
+    )
+  
+  
+  p4 <-
+    sp_distance_plot(
+      lower_h_tmm = tmm_sample,
+      higher_h = higher_h,
+      higher_h_name = higher_h_name,
+      metadata = metadata
+    )
+  
+  p5 <-
+    expression_barplt(
+      lower_h_tmm = tmm_sample,
+      higher_h = higher_h,
+      higher_h_name = higher_h_name,
+      metadata = metadata
+    )
+  
+  p6 <-
+    vln_tmm_tpm_plt(
+      metadata = metadata,
+      higher_h_name = higher_h_name,
+      higher_h = higher_h,
+      lower_h_tmm = tmm_sample,
+      lower_h_tpm = tpm_sample
+    )
+  
+  (p1 + p2) / (p3 + p4) / (p5 + p6)
+  
+  
+  ggsave(
+    paste0("./final_plots/QC_final/", tissue_name, ".pdf"),
+    height = 15,
+    width = 15
+  )
+}
+
+```
+
+```{r}
+library(ggrepel)
+
+  #umap_res <- HPA_UMAP(wide_data)
+plot_data <- umap_res %>%
+  left_join(metadata, by = c("sample" = "ID")) %>%
+  mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                           TRUE ~ "#000000"))
+
+ggplot() +
+  geom_point(data = plot_data, aes(UMAP1, UMAP2,  colour = Color), alpha = 0.6) +
+  geom_point(alpha = 0.6) +
+    scale_color_identity() + ggtitle (paste(element)) +
+  geom_text_repel(data = plot_data %>% filter(tissue_name %in% element), aes(UMAP1, UMAP2,label = sample) )
+
+```
+```{r}
+
+highlight_umap_plt <-
+  function(umap_res,
+           metadata,
+           element,
+           hierarchy_name) {
+    #umap_res <- HPA_UMAP(wide_data)
+    plot_data <- umap_res %>%
+      left_join(metadata, by = c("sample" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(UMAP1, UMAP2,  color = Color),
+                 alpha = 0.3) +
+      geom_point(alpha = 0.3) +
+      scale_color_identity() + ggtitle (paste(element)) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(UMAP1, UMAP2, label = sample))
+  }
+
+highlight_umap_plt(
+      umap_res = umap_res,
+      metadata = metadata,
+      element = higher_h,
+      hierarchy_name = higher_h_name
+    )
+
+
+
+highlight_pca_plt <-
+  function(pca_data,
+           metadata,
+           element,
+           hierarchy_name) {
+    plot_data <- pca_data %>%
+      scores() %>%
+      as_tibble(rownames = "sample_id") %>%
+      left_join(metadata,
+                by = c("sample_id" = "ID")) %>%
+      mutate(Color = case_when(.[[hierarchy_name]] == element ~ "#ff0000",
+                               TRUE ~ "#000000"))
+    ggplot() +
+      geom_point(data = plot_data,
+                 aes(PC1, PC2,  colour = Color),
+                 alpha = 0.6) +
+      xlab(paste("PC1", all_pca@R2[1] * 100, "% of the variance")) +
+      ylab(paste("PC2", all_pca@R2[2] * 100, "% of the variance")) +
+      scale_color_identity() +
+      ggtitle (paste(higher_h)) +
+      geom_text_repel(data = plot_data %>% filter(tissue_name %in% element),
+                      aes(PC1, PC2, label = sample))
+    
+    
+  }
+
+
+
+
+
+```
+#Alluvial Plot
+
+#Function
+```{r}
+multi_alluvial_plot <-
+  function(data,
+           vars,
+           chunk_levels,
+           pal,
+           color_by = c(1, 3, 3)) {
+    selvars = vars
+    
+    if (!is.null(names(vars))) {
+      vars = names(vars)
+    }
+    
+    alluv_1 <-
+      data %>%
+      ungroup() %>%
+      select(selvars) %>%
+      ungroup() %>%
+      mutate(row_n = row_number()) %>%
+      gather(bar, chunk,-row_n) %>%
+      left_join(tibble(bar = vars,
+                       color_vars = color_by),
+                by = "bar") %>%
+      group_by(row_n) %>%
+      mutate(chunk_color = chunk[match(vars[color_vars], bar)]) %>%
+      ungroup() %>%
+      
+      mutate(chunk = factor(chunk, levels = chunk_levels),
+             bar = factor(bar, levels = vars)) %>%
+      
+      
+      ggplot(aes(
+        x = bar,
+        stratum = chunk,
+        alluvium = row_n,
+        y = 1
+      )) +
+      
+      geom_flow(aes(fill = chunk_color),
+                show.legend = F) +
+      geom_stratum(aes(fill = chunk),
+                   show.legend = F, color = NA) +
+      
+      scale_x_discrete(expand = c(.1, .1), position = "top") +
+       scale_fill_manual(values = pal) +
+
+
+      theme(
+        axis.text.x = element_text(size = 18, face = "bold"),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_blank(),
+        axis.title = element_blank()
+      )
+
+
+    
+    
+    flow_data <-
+      ggplot_build(alluv_1)$data[[1]] %>%
+      as_tibble() %>%
+      {
+        if ("side" %in% names(.)) {
+          .
+        } else{
+          mutate(.,
+                 side = case_when(flow == "from" ~ "start",
+                                  flow == "to" ~ "end"))
+        }
+      }
+    
+    
+    stratum_data <-
+      ggplot_build(alluv_1)$data[[2]]
+    
+    flow_data_labels <-
+      flow_data %>%
+      as_tibble() %>%
+      
+      select(x, stratum, group, side, ymin, ymax) %>%
+      pivot_wider(names_from = side,
+                  values_from = c(x, stratum, ymin, ymax)) %>%
+      
+      mutate_at(
+        c(
+          "x_end",
+          "ymax_end",
+          "ymin_end",
+          "x_start",
+          "ymax_start",
+          "ymin_start"
+        ),
+        as.numeric
+      ) %>%
+      group_by(stratum_start, stratum_end, x_start, x_end) %>%
+      summarise(
+        y_end = (min(ymin_end) + max(ymax_end)) / 2,
+        y_start = (min(ymin_start) + max(ymax_start)) / 2,
+        size = max(ymax_start) - min(ymin_start)
+      )
+    
+    alluv_1 <-
+      alluv_1 +
+      # geom_text(
+      #   data = flow_data_labels,
+      #   aes(x = x_start + 1 / 6,
+      #       y = y_start,
+      #       label = size),
+      #   inherit.aes = F,
+      #   size = 3,
+      #   hjust = 0
+      # ) +
+      # geom_text(
+      #   data = flow_data_labels,
+      #   aes(x = x_end - 1 / 6,
+      #       y = y_end,
+      #       label = size),
+      #   inherit.aes = F,
+      #   size = 3,
+      #   hjust = 1
+      # ) +
+      # 
+      # Stratum label
+      geom_text(
+        data = stratum_data,
+        aes(
+          x = x,
+          y = y,
+          label = paste(stratum#, 
+                       # paste("[", ymax - ymin, "]", sep = "")
+                        )
+        ),
+        size = 4,
+        inherit.aes = F
+      )
+                
+    
+    alluv_1
+  }
+```
+
+
+```{r}
+metadata <- read_csv("./data/final_data/curated_metadata.csv")
+metadata <- metadata %>% filter(organ_name =="Brain")
+
+t_names <- metadata$tissue_name %>% unique()
+r_names <- metadata$region_tissue_name %>% unique()
+c_names <- metadata$consensus_tissue_name %>% unique()
+o_names <- metadata$organ_name %>% unique()
+
+t_colors <- metadata %>% select(tissue_name, tissue_color) %>% unique() %>% rename (chunk = tissue_name, color = tissue_color)
+r_colors <- metadata %>% select(region_tissue_name, region_tissue_color) %>% unique() %>% rename (chunk = region_tissue_name, color = region_tissue_color)
+c_colors <- metadata %>% select(consensus_tissue_name, consensus_tissue_color) %>% unique() %>% rename (chunk = consensus_tissue_name, color = consensus_tissue_color)
+o_colors <- metadata %>% select(organ_name, organ_color) %>% unique() %>% rename (chunk = organ_name, color = organ_color)
+
+bind_colors <- bind_rows(t_colors, r_colors, o_colors) %>% unique() %>% arrange(chunk) %>% mutate(row_n = row_number())
+pal <-  bind_colors$color
+pal <- setNames(pal, bind_colors$chunk)
+
+data = metadata
+vars = c("tissue_name", "region_tissue_name", "organ_name")
+chunk_levels = c(t_names, r_names, o_names) %>% unique()
+color_by = c(1, 3, 3)
+
+multi_alluvial_plot(data = metadata, vars = vars, chunk_levels = chunk_levels, pal = pal, color_by = c(1, 3, 3))
+
+ggsave("final_plots/alluvial/brain-tco-1_p.pdf", height = 7, width = 10)
+
+```
+
+```{r}
+metadata <- read_csv("./data/final_data/curated_metadata.csv")
+
+bind_colors <- bind_rows(t_colors, r_colors, c_colors, o_colors) %>% unique() %>% arrange(chunk) %>% mutate(row_n = row_number())
+pal <-  bind_colors$color
+pal <- setNames(pal, bind_colors$chunk)
+
+data = metadata
+vars = c("tissue_name", "region_tissue_name", "consensus_tissue_name" , "organ_name")
+chunk_levels = c(t_names, r_names, c_names, o_names) %>% unique()
+color_by = c(1, 3, 3)
+
+multi_alluvial_plot(data = metadata, vars = vars, chunk_levels = chunk_levels, pal = pal, color_by = c(1, 1, 3, 3))
+
+ggsave("final_plots/alluvial/all-tco.pdf", height = 25, width = 20)
+
+```
+
+
+```{r}
+metadata <- read_csv("./data/final_data/curated_metadata.csv")
+
+bind_colors <- bind_rows(t_colors, c_colors, o_colors) %>% unique() %>% arrange(chunk) %>% mutate(row_n = row_number())
+pal <-  bind_colors$color
+pal <- setNames(pal, bind_colors$chunk)
+data = metadata
+vars = rev(c("organ_name", "consensus_tissue_name" , "tissue_name"))
+chunk_levels = rev(c(o_names, c_names, t_names) %>% unique())
+color_by = c(1, 3, 3)
+
+multi_alluvial_plot(data = metadata, vars = vars, chunk_levels = chunk_levels, pal = pal, color_by = c(1, 3, 3))
+ggsave("final_plots/alluvial/all-tco_clean.pdf", height = 25, width = 20)
+
+```
+
+
+#Tissues overview
+```{r}
+tissue_colors_palette_full <- rbind(
+  metadata %>% select(name = tissue_name, color = tissue_color), 
+  metadata %>% select(name = consensus_tissue_name, color = consensus_tissue_color),
+  metadata %>% select(name = organ_name, color = organ_color)
+) %>% distinct() %>% 
+  mutate(name = str_to_sentence(name)) %>% arrange(name)
+
+pal <- tissue_colors_palette_full$color
+pal <- set_names(pal,tissue_colors_palette_full$name )
+```
+
+
+```{r}
+plot_data1 <- 
+  metadata %>%
+  select(tissue_name, region_tissue_name, consensus_tissue_name, organ_name) %>% #,
+         #tissue_color, region_tissue_color, consensus_tissue_color, organ_color) %>% 
+  mutate(tissue_name = str_to_sentence(tissue_name), region_tissue_name = str_to_sentence(region_tissue_name), consensus_tissue_name = str_to_sentence(consensus_tissue_name), organ_name = str_to_sentence( organ_name)) %>%   unique() %>% 
+  mutate(organ_name = factor(case_when(organ_name == "Male reproductive system" ~ 
+                                         "Male tissues",
+                                       organ_name == "Breast and female reproductive system" ~
+                                         "Female tissues",
+                                       organ_name == "Adipose & soft tissue" ~ 
+                                         "Connective & soft tissue",
+                                       organ_name == "Bone marrow & immune system" ~
+                                         "Bone marrow & lymphoid tissues",
+                                       T ~ organ_name),
+                             c("Brain",
+                               "Eye",
+                               "Endocrine tissues",
+                               "Respiratory system",
+                               "Proximal digestive tract",
+                               "Gastrointestinal tract",
+                               "Liver & gallbladder",
+                               "Kidney & urinary bladder",
+                               "Pancreas",
+                               "Male tissues",
+                               "Female tissues",
+                               "Muscle tissues",
+                               "Connective & soft tissue",
+                               "Skin",
+                               "Bone marrow & lymphoid tissues")))
+
+plot_data1 <- plot_data1 %>% 
+  arrange(organ_name,
+          consensus_tissue_name,
+          region_tissue_name,
+          tissue_name) %>% 
+  mutate(plot_order = row_number())
+
+plot_data2 <- 
+  plot_data1 %>%
+  select(-region_tissue_name) %>%
+  gather(column, label, -plot_order) %>%
+  group_by(label, column) %>% 
+  summarise(plot_order = mean(plot_order))  %>%
+  ungroup() %>% 
+  mutate(label = label,
+         column = factor(column,
+                         c("organ_name", 
+                           "consensus_tissue_name", 
+                           "tissue_name")))
+
+plot_data3 <- 
+  plot_data1 %>% 
+  group_by(consensus_tissue_name) %>% 
+  mutate(left_pos = mean(plot_order))
+
+plot_data4 <- 
+  plot_data2 %>% 
+  left_join(tissue_colors_palette_full,
+            by = c("label" = "name")) %>% 
+  group_by(column, label) %>% 
+  summarise(miny = min(plot_order) - 0.5,
+            maxy = max(plot_order) + 0.5)
+
+
+ggplot() +
+  geom_rect(data = plot_data4, 
+           aes(xmin = column, xmax = column, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 3, xmax = 4, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "consensus_tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 1, xmax = 2, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F, width = 10
+         ) +
+  geom_segment(
+    data = plot_data3,
+    aes(
+      x = "consensus_tissue_name",
+      xend = "tissue_name",
+      y = left_pos,
+      yend = plot_order,
+      color = tissue_name
+    ),
+    show.legend = F,
+    alpha = 0.5,
+    size = 2
+  )+
+  geom_text(
+    data = plot_data2 %>% filter(column == "consensus_tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 1,
+    size = 2 * 5 / 6,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_text(
+    data = plot_data2 %>% filter(column == "tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 0,
+    size = 2 * 5 / 6,
+    show.legend = F,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_label(
+    data = plot_data2 %>%
+      filter(column == "organ_name"),
+    #aes(x = column, y = plot_order, label = label),
+    aes(x = column, y = plot_order, label = gsub(" ", "\n", label)),
+    show.legend = F,
+    label.size = 0,
+    hjust = 1,
+    lineheight = 0.7,
+    label.padding = unit(0, "mm"),
+    size = 2 * 5 / 6
+  ) +
+  scale_y_reverse() +
+  scale_x_discrete(labels  = c('Organ system', "Grouped tissue", "Tissue type"),position = "top") +
+  scale_fill_manual(values = pal) +
+  scale_color_manual(values = pal) +
+  theme_void() +
+  theme(axis.text.x = element_text())
+ggsave("final_plots/tissues.pdf", height = 7, width = 4)
+
+```
+
