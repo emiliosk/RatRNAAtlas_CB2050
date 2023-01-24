@@ -1,0 +1,3180 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggalluvial)
+library(biomaRt)
+library(ggdendro)
+library(pcaMethods)
+library(uwot)
+library(pheatmap)
+library(ggplotify)
+library (ggrepel)
+library(ggraph)
+library(patchwork)
+
+
+
+select <- dplyr::select
+```
+
+```{r}
+tmm_sample <- read_csv("./data/final_data/curated_pTMM_rattus_norvegicus_v103.csv")
+metadata <- read_csv("./data/final_data/curated_metadata.csv")
+all(sort(colnames(tmm_sample[-1])) == sort(metadata$ID))
+
+```
+
+#Generate hierarchical data
+```{r}
+
+
+#slow, but understanable
+tmm_tissue <- tmm_sample %>% 
+  gather(sample, tmm, -1) %>% 
+  left_join(metadata %>% select(ID,tissue_name), by = c("sample" = "ID")) %>% 
+  group_by(target_id, tissue_name) %>% 
+  summarize(tmm = mean(tmm)) %>% 
+  ungroup()
+
+write_csv(tmm_tissue, file="./data/final_data/final_tmm_tissue_name.csv")
+
+tmm_region_tissue <- tmm_tissue %>% 
+  left_join(metadata %>% select(tissue_name,region_tissue_name), by = c("tissue_name" = "tissue_name")) %>% 
+  group_by(target_id, region_tissue_name) %>% 
+  summarize(tmm = max(tmm)) %>% 
+  ungroup()
+
+write_csv(tmm_region_tissue, file="./data/final_data/final_tmm_region_tissue_name.csv")
+
+tmm_consensus_tissue <- tmm_region_tissue %>% 
+  left_join(metadata %>% select(region_tissue_name,consensus_tissue_name), by = c("region_tissue_name" = "region_tissue_name")) %>% 
+  group_by(target_id, consensus_tissue_name) %>% 
+  summarize(tmm = max(tmm)) %>% 
+  ungroup()
+
+write_csv(tmm_consensus_tissue, file="./data/final_data/final_tmm_consensus_name.csv")
+
+#check
+all(metadata$tissue_name %>% unique() %>% sort() == tmm_tissue$tissue_name %>% unique() %>% sort())
+all(metadata$region_tissue_name %>% unique() %>% sort() == tmm_region_tissue$region_tissue_name %>% unique() %>% sort())
+all(metadata$consensus_tissue_name %>% unique() %>% sort() == tmm_consensus_tissue$consensus_tissue_name %>% unique() %>% sort())
+```
+
+```{r}
+# # faster, but less understandable
+# unique_tissue <- select(metadata,tissue_name) %>%
+#   distinct()
+# tmm_by_tissue <- tibble(target_id = tmm_sample$target_id)
+# for (i in unique_tissue$tissue_name) {
+#   curent_tissue_meta = metadata[metadata$tissue_name == i,]
+#   current_tmm = select(tmm_sample,c(target_id, curent_tissue_meta$ID))
+#   means <- current_tmm %>% select(curent_tissue_meta$ID) %>% rowMeans()
+#   tmm_by_tissue[toString(i)] <- means
+# }
+# #tmm_by_tissue <- tmm_by_tissue %>% gather(tissue_name, tmm, -1)
+# #write.csv(tmm_by_tissue, file="tmm_tissue_name.csv", row.names = FALSE)
+# 
+# unique_region <- select(metadata,region_tissue_name) %>%
+#   distinct()
+# tmm_by_region <- tibble(target_id = tmm_sample$target_id)
+# for (i in unique_region$region_tissue_name) {
+#   current_region_meta = metadata[metadata$region_tissue_name == i,]
+#   current_tmm = select(tmm_by_tissue, c(target_id, unique(current_region_meta$tissue_name)))
+#   max <- select(current_tmm,-target_id) %>% apply(1,max)
+#   tmm_by_region[toString(i)] <- max
+# }
+# 
+# # write.csv(tmm_by_region, file="tmm_region_name.csv", row.names = FALSE)
+# 
+# unique_consensus <- select(metadata,consensus_tissue_name) %>%
+#   distinct()
+# tmm_by_consensus <- tibble(target_id = tmm_sample$target_id)
+# for (i in unique_consensus$consensus_tissue_name) {
+#   current_consensus_meta = metadata[metadata$consensus_tissue_name == i,]
+#   current_tmm = select(tmm_by_region, c(target_id, unique(current_consensus_meta$region_tissue_name)))
+#   max <- select(current_tmm,-target_id) %>% apply(1,max)
+#   tm_by_consensus[toString(i)] <- max
+# }
+
+#write.csv(tmm_by_consensus, file="tmm_consensus_name.csv", row.names = FALSE)
+```
+
+#Figure 1
+##Figure 1A - Hierarchy Overview
+```{r}
+tissue_colors_palette_full <- rbind(
+  metadata %>% select(name = tissue_name, color = tissue_color), 
+  metadata %>% select(name = consensus_tissue_name, color = consensus_tissue_color),
+  metadata %>% select(name = organ_name, color = organ_color)
+) %>% distinct() %>% 
+  mutate(name = str_to_sentence(name)) %>% arrange(name)
+
+pal <- tissue_colors_palette_full$color
+pal <- set_names(pal,tissue_colors_palette_full$name )
+
+
+plot_data1 <- 
+  metadata %>%
+  select(tissue_name, region_tissue_name, consensus_tissue_name, organ_name) %>% #,
+         #tissue_color, region_tissue_color, consensus_tissue_color, organ_color) %>% 
+  mutate(tissue_name = str_to_sentence(tissue_name), region_tissue_name = str_to_sentence(region_tissue_name), consensus_tissue_name = str_to_sentence(consensus_tissue_name), organ_name = str_to_sentence( organ_name)) %>%   unique() %>% 
+  mutate(organ_name = factor(case_when(organ_name == "Male reproductive system" ~ 
+                                         "Male tissues",
+                                       organ_name == "Breast and female reproductive system" ~
+                                         "Female tissues",
+                                       organ_name == "Adipose & soft tissue" ~ 
+                                         "Connective & soft tissue",
+                                       organ_name == "Bone marrow & immune system" ~
+                                         "Bone marrow & lymphoid tissues",
+                                       T ~ organ_name),
+                             c("Brain",
+                               "Eye",
+                               "Endocrine tissues",
+                               "Respiratory system",
+                               "Proximal digestive tract",
+                               "Gastrointestinal tract",
+                               "Liver & gallbladder",
+                               "Kidney & urinary bladder",
+                               "Pancreas",
+                               "Male tissues",
+                               "Female tissues",
+                               "Muscle tissues",
+                               "Connective & soft tissue",
+                               "Skin",
+                               "Bone marrow & lymphoid tissues")))
+
+plot_data1 <- plot_data1 %>% 
+  arrange(organ_name,
+          consensus_tissue_name,
+          region_tissue_name,
+          tissue_name) %>% 
+  mutate(plot_order = row_number())
+
+plot_data2 <- 
+  plot_data1 %>%
+  select(-region_tissue_name) %>%
+  gather(column, label, -plot_order) %>%
+  group_by(label, column) %>% 
+  summarise(plot_order = mean(plot_order))  %>%
+  ungroup() %>% 
+  mutate(label = label,
+         column = factor(column,
+                         c("organ_name", 
+                           "consensus_tissue_name", 
+                           "tissue_name")))
+
+plot_data3 <- 
+  plot_data1 %>% 
+  group_by(consensus_tissue_name) %>% 
+  mutate(left_pos = mean(plot_order))
+
+plot_data4 <- 
+  plot_data2 %>% 
+  left_join(tissue_colors_palette_full,
+            by = c("label" = "name")) %>% 
+  group_by(column, label) %>% 
+  summarise(miny = min(plot_order) - 0.5,
+            maxy = max(plot_order) + 0.5)
+
+
+ggplot() +
+  geom_rect(data = plot_data4, 
+           aes(xmin = column, xmax = column, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 3, xmax = 4, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "consensus_tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 1, xmax = 2, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F, width = 10
+         ) +
+  geom_segment(
+    data = plot_data3,
+    aes(
+      x = "consensus_tissue_name",
+      xend = "tissue_name",
+      y = left_pos,
+      yend = plot_order,
+      color = tissue_name
+    ),
+    show.legend = F,
+    alpha = 0.5,
+    size = 2
+  )+
+  geom_text(
+    data = plot_data2 %>% filter(column == "consensus_tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 1,
+    size = 2 * 5 / 6,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_text(
+    data = plot_data2 %>% filter(column == "tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 0,
+    size = 2 * 5 / 6,
+    show.legend = F,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_label(
+    data = plot_data2 %>%
+      filter(column == "organ_name"),
+    #aes(x = column, y = plot_order, label = label),
+    aes(x = column, y = plot_order, label = gsub(" ", "\n", label)),
+    show.legend = F,
+    label.size = 0,
+    hjust = 1,
+    lineheight = 0.7,
+    label.padding = unit(0, "mm"),
+    size = 2 * 5 / 6
+  ) +
+  scale_y_reverse() +
+  scale_x_discrete(labels  = c('Organ system', "Grouped tissue", "Tissue type"),position = "top") +
+  scale_fill_manual(values = pal) +
+  scale_color_manual(values = pal) +
+  theme_void() +
+  theme(axis.text.x = element_text())
+#ggsave("final_plots/tissues.pdf", height = 7, width = 4)
+
+```
+
+##Figure 1B - Ward's Retina-Dendrogramm
+```{r}
+
+##Functino based on Max Karlsson's retinogramm
+circular_dendrogram_retinastyle_2 <-
+  function(clust, color_mapping, label_col, color_col, 
+           scale_expansion = c(0.25, 0.25), text_size = 3, width_range = c(1.5, 6), 
+           arc_strength = 0.8, default_color = "gray80") {
+    require(ggraph)
+    require(igraph)
+    require(viridis)
+    require(tidyverse)
+    require(magrittr)
+    
+    dendrogram <-
+      clust %>%
+      as.dendrogram()
+    
+    
+    
+    g <-
+      ggraph(dendrogram, layout = 'dendrogram', circular = T)
+    # 
+    # g +
+    #   geom_edge_fan(data = edge_data %>%
+    #                    mutate(hghl = edge.id == 99),
+    #                  aes(label = edge_id, color = as.factor(rank_radius)),
+    #                  width =4) +
+    #   geom_node_text(aes(label = label))
+    
+    edge_data <- 
+      get_edges()(g$data) %>%
+      as_tibble() %>%
+      left_join(color_mapping %>%
+                  select(label = label_col,
+                         color = color_col),
+                by = c("node2.label" = "label")) %>%
+      mutate(radius = xend^2 + yend^2,
+             edge.id = as.character(edge.id)) %>%
+      arrange(-radius) %>%
+      mutate(edge_id = as.character(row_number()),
+             rank_radius = unclass(factor(-radius)),
+             x_m = round(x, 10),
+             y_m = round(y, 10),
+             xend_m = round(xend, 10),
+             yend_m = round(yend, 10)) 
+    
+    
+    edge_id_colors <- 
+      edge_data %>% 
+      filter(!is.na(color)) %$%
+      set_names(color, edge_id)
+    
+    
+    for(rank_rad in 2:max(edge_data$rank_radius)) {
+      edge_id_colors_new <- 
+        left_join(edge_data %>%
+                    select(edge_id, radius, xend_m, yend_m, rank_radius) %>%
+                    filter(rank_radius == rank_rad),
+                  edge_data %>%
+                    select(edge_id, radius, x_m, y_m, rank_radius) %>%
+                    filter(rank_radius < rank_rad),
+                  by = c("xend_m" = "x_m", "yend_m" = "y_m")) %>%
+        left_join(enframe(edge_id_colors),
+                  by = c("edge_id.y" = "name")) %>%
+        group_by(edge_id.x) %>% 
+        summarise(color = ifelse(n_distinct(value) == 1 & any(value != default_color), 
+                                 as.character(unique(value)),
+                                 default_color)) %$%
+        set_names(color, edge_id.x)
+      edge_id_colors <- 
+        c(edge_id_colors, edge_id_colors_new)
+    }
+    
+    
+    
+    g +
+      scale_edge_width(range = width_range)+
+      geom_edge_diagonal(data = edge_data,
+                         aes(edge_color = as.character(edge_id),
+                             edge_width = 1 - sqrt(xend^2 + yend^2)),
+                         strength = arc_strength,
+                         show.legend = F) +
+      
+      
+      scale_edge_color_manual(values = edge_id_colors)  +
+      g$data %>%
+      filter(label != "") %>%
+      mutate(degree = case_when(x >= 0 ~ asin(y) * 180 / pi,
+                                x < 0 ~ 360 - asin(y) * 180 / pi)) %>%
+      left_join(color_mapping %>%
+                  select(label = label_col,
+                         color = color_col),
+                by = "label") %>%
+                {geom_node_text(data = .,
+                                aes(label = label),
+                                angle = .$degree,
+                                hjust = ifelse(.$x < 0, 
+                                               1, 
+                                               0),
+                                vjust = 0.5,
+                                size = text_size)}  +
+      scale_x_continuous(expand = expand_scale(scale_expansion)) +
+      scale_y_continuous(expand = expand_scale(scale_expansion)) +
+      
+      coord_fixed() +
+      theme_void()
+  }
+```
+
+
+```{r}
+
+hclust4RNAseq_ward <- function(df, correlation_method = "spearman"){
+  #wide dataframe as input 
+  #to get correlation between samples, where rows are genes columns are samples
+  #to get correlation between genes across samples, input df with genes as columns
+  #can use later for dendogram making: ggdendrogram([hclust4RNAseq_results], rotate = FALSE, size = 10, face = "bold")
+  similarity <- cor(df, method=correlation_method, use="pairwise.complete.obs")
+  dissimilarity <- 1 - similarity
+  hcl <- hclust(as.dist(dissimilarity), "ward.D2")
+  return (hcl)
+} 
+
+tissue_dendro_ward <- hclust4RNAseq_ward(tmm_tissue %>% mutate(tissue_name = str_to_sentence(tissue_name)) %>%  spread(tissue_name, tmm) %>% column_to_rownames("target_id"))
+
+circular_dendrogram_retinastyle_2(
+  clust = tissue_dendro_ward, 
+  color_mapping = metadata %>% 
+    select(tissue_name, tissue_color) %>% 
+    mutate(tissue_name = str_to_sentence(tissue_name)), 
+  label_col = "tissue_name", 
+  color_col = "tissue_color", 
+  scale_expansion = c(0.7, 0.7), 
+  text_size = 2.4, 
+  width_range = c(0.5, 4),
+  arc_strength = 0.4, 
+  default_color = "gray80")
+
+#ggsave("./final_plots/data_presentation/retinagram_all_tissue_clust_ward.pdf", width = 6, height = 6)
+
+```
+
+##Figure 1C - Spearman heatmap (grouped tissue)
+```{r}
+##Spearman's roh heatmap at grouped tissue level
+
+if(file.exists("./data/final_data/spearman_corr_consensus_tissues.csv")) {
+  consensus_tmm_spearman <- read_csv("./data/final_data/spearman_corr_consensus_tissues.csv")
+} else {
+  consensus_tmm_spearman <-  tmm_consensus_tissue %>% 
+    spread(consensus_tissue_name, tmm) %>% 
+    column_to_rownames("target_id") %>% 
+    cor(method="spearman", use="pairwise.complete.obs") %>% 
+    as.data.frame() %>% 
+    as_tibble(rownames = "consensus_tissue_name")
+  write_csv(consensus_tmm_spearman,"./data/final_data/spearman_corr_consensus_tissues.csv")
+}
+
+consensus_tmm_spearman %>% 
+  rename_with(str_to_sentence, -1) %>% 
+  mutate(consensus_tissue_name = str_to_sentence(consensus_tissue_name)) %>% 
+  column_to_rownames("consensus_tissue_name") %>% 
+  pheatmap(
+   # clustering_method = "ward.D2",
+    cellheight = 8,
+    cellwidth = 8, 
+    border_color = NA,
+    color = viridis::inferno(20, direction = -1),
+    show_rownames = FALSE, 
+    ) %>% 
+  as.ggplot()
+#ggsave("./final_plots/data_presentation/spearman_corr_consensus_tissue.pdf", height = 10, width = 10)
+
+```
+
+
+#Figure 2
+##Figure 2A - Sample level PCA Plot
+```{r}
+
+sample_pca <-
+  tmm_sample %>% 
+  
+  # gather(sample_name, tmm, -1) %>%
+  # group_by(target_id) %>%
+  # mutate(sd = sd(tmm)) %>%
+  # ungroup() %>%
+  # filter(sd > 0) %>%
+  # select(-sd) %>%
+  # spread(sample_name, tmm) %>%
+  
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+#sample_pca@scores
+
+summary(sample_pca)
+
+plot_data <- sample_pca %>% 
+  scores() %>% 
+  as_tibble(rownames = "sample_id") %>% 
+  left_join(metadata,
+            by = c("sample_id" = "ID"))
+
+
+organ_colors <- metadata %>% select(organ_name, organ_color) %>% unique()
+pal <-  organ_colors$organ_color
+pal <- setNames(pal, organ_colors$organ_name)
+
+plot_data %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(fill = organ_name), color = "gray25", alpha = 0.7, shape=21, size = 2, stroke = 0.5) +
+  scale_fill_manual(values = pal) + 
+  #geom_text(aes(label = sample_id), vjust = 1,hjust = 0, nudge_y =-1) +
+  xlab(paste("PC1", sample_pca@R2[1] * 100, "% of the variance")) +
+  ylab(paste("PC2", sample_pca@R2[2] * 100, "% of the variance")) +
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                          legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 3, byrow = TRUE)) 
+
+
+#ggsave("./final_plots/data_presentation/sample_pca_1.pdf", width = 8, height = 8)
+# ggsave("./final_plots/data_presentation/sample_pca_1_w_filter.pdf", width = 8, height = 8)
+# 
+# plot_data %>%
+#   ggplot(aes(PC1, PC2)) +
+#   geom_point(aes(fill = organ_name), color = "gray25", alpha = 0.7, shape=21, size = 2, stroke = 0.5) +
+#   scale_fill_manual(values = pal) + 
+#   #geom_text(aes(label = sample_id), vjust = 1,hjust = 0, nudge_y =-1) +
+#   xlab(paste("PC1", sample_pca@R2[1] * 100, "% of the variance")) +
+#   ylab(paste("PC2", sample_pca@R2[2] * 100, "% of the variance")) +
+#   theme_classic() + theme(legend.text = element_text(size = 10),
+#                           legend.title =element_blank(), 
+#                           legend.position = "bottom",
+#                           legend.spacing.y = unit(-0.3, 'cm'),
+#                           legend.spacing.x = unit(-0.01, 'cm')) +
+#   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+# 
+# #ggsave("./final_plots/data_presentation/sample_pca_2.pdf", width = 5, height = 5)
+# # ggsave("./final_plots/data_presentation/sample_pca_2_w_filter.pdf", width = 7, height = 7)
+
+
+```
+
+###Extra PCA plots not in report
+```{r}
+sample_pca <-
+  tmm_sample %>% 
+  # gather(sample_name, tmm, -1) %>% 
+  # group_by(target_id) %>%
+  # mutate(sd = sd(tmm)) %>%
+  # ungroup() %>% 
+  # filter(sd > 0) %>% 
+  # select(-sd) %>% 
+  # spread(sample_name, tmm) %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+#sample_pca@scores
+
+summary(sample_pca)
+
+plot_data <- sample_pca %>% 
+  scores() %>% 
+  as_tibble(rownames = "sample_id") %>% 
+  left_join(metadata,
+            by = c("sample_id" = "ID"))
+
+
+region_colors <- metadata %>% select(region_tissue_name, region_tissue_color, organ_name) %>% unique() %>% filter(organ_name == "Brain") %>% select(-organ_name)
+pal <-  region_colors$region_tissue_color
+pal <- setNames(pal, region_colors$region_tissue_name)
+
+plot_data %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(fill = region_tissue_name),  color = "gray25", alpha = 0.7, shape=21, size = 2, stroke = 0.5) +
+  scale_fill_manual(values = pal, na.value = "#FFFFFF") + 
+  xlim(-75,0) +
+  ylim(-10,5) +
+  xlab(paste("PC1", sample_pca@R2[1] * 100, "% of the variance")) +
+  ylab(paste("PC2", sample_pca@R2[2] * 100, "% of the variance")) +
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                          legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+
+#ggsave("./final_plots/data_presentation/brain_w_all_sample_pca.pdf", width = 5, height = 5)
+
+
+```
+
+```{r}
+
+brain_pca <-
+  tmm_sample %>% select(c(target_id, metadata %>% filter(organ_name =="Brain") %>% .$ID))%>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>%
+  column_to_rownames("target_id") %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = 8)
+
+#brain_pca@scores
+
+
+plot_data <- brain_pca %>% 
+  scores() %>% 
+  as_tibble(rownames = "sample_id") %>% 
+  left_join(metadata,
+            by = c("sample_id" = "ID"))
+
+
+region_colors <- metadata %>% select(region_tissue_name, region_tissue_color) %>% unique()
+pal <-  region_colors$region_tissue_color
+pal <- setNames(pal, region_colors$region_tissue_name)
+
+plot_data %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(fill = region_tissue_name), color = "gray25", alpha = 0.7, shape=21, size = 2, stroke = 0.5) +
+  scale_fill_manual(values = pal) + 
+  #geom_text(aes(label = sample_id), vjust = 1,hjust = 0, nudge_y =-1) +
+  xlab(paste("PC1", brain_pca@R2[1] * 100, "% of the variance")) +
+  ylab(paste("PC2", brain_pca@R2[2] * 100, "% of the variance")) +
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                          legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+
+#ggsave("./final_plots/data_presentation/brain_sample_pca.pdf", width = 5, height = 5)
+
+
+
+```
+
+##Figure 2B - UMAP Plot
+```{r}
+wide_data = tmm_sample 
+seed = 4
+n_epochs = 1000
+n_neighbors = 15
+set.seed(seed)
+    
+pca_res <-
+  wide_data %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+  column_to_rownames(colnames(wide_data)[1]) %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = dim(.)[1])
+    
+    
+pc_lim <-
+  which(pca_res@R2cum > 0.8)[1]
+
+pc_lim_sd <-
+  rev(which(pca_res@sDev > 1))[1]
+
+set.seed(seed)
+umap_res <- pca_res@scores[, 1:pc_lim] %>%
+  umap(n_neighbors = n_neighbors,
+       n_epochs = n_epochs) %>%
+       #metric = "correlation") %>%
+  as_tibble() %>%
+  set_names(paste0("UMAP", 1:ncol(.))) %>%
+  mutate(sample = rownames(pca_res@scores)) %>%
+  select(sample, everything()) %>% 
+  left_join(metadata, by = c("sample" = "ID"))
+
+organ_colors <- metadata %>% select(organ_name, organ_color) %>% unique()
+pal <-  organ_colors$organ_color
+pal <- setNames(pal, organ_colors$organ_name)
+
+# umap_res %>%  ggplot(aes(UMAP1, UMAP2,  color = organ_name)) +
+#    geom_point(alpha = 0.8) + scale_color_manual(values = pal)
+umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
+  geom_point(
+    aes(fill = organ_name),
+    color = "gray25",
+    alpha = 0.7,
+    shape = 21,
+    size = 2,
+    stroke = 0.5
+  ) + scale_fill_manual(values = pal) + 
+  # theme_bw() + theme(
+  #   panel.border = element_blank(),
+  #   panel.grid.major = element_blank(),
+  #   panel.grid.minor = element_blank(),
+  #   axis.line = element_line(colour = "black"),
+  #   legend.title = element_blank()
+  # )
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                          legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+
+#ggsave("./final_plots/data_presentation/sample_umap_euclidean.pdf", width = 5, height = 5.5)
+```
+
+##Figure 2C - Brain Umap Plot
+```{r}
+#Plot focusing only on brain samples, but UMAP was based on the whole sample set, not only brian samples.
+
+wide_data = tmm_sample 
+seed = 4
+n_epochs = 1000
+n_neighbors = 15
+set.seed(seed)
+    
+pca_res <-
+  wide_data %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+  column_to_rownames(colnames(wide_data)[1]) %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = dim(.)[1])
+    
+    
+pc_lim <-
+  which(pca_res@R2cum > 0.8)[1]
+
+pc_lim_sd <-
+  rev(which(pca_res@sDev > 1))[1]
+
+set.seed(seed)
+umap_res <- pca_res@scores[, 1:pc_lim] %>%
+  umap(n_neighbors = n_neighbors,
+       n_epochs = n_epochs) %>%
+       #metric = "correlation") %>%
+  as_tibble() %>%
+  set_names(paste0("UMAP", 1:ncol(.))) %>%
+  mutate(sample = rownames(pca_res@scores)) %>%
+  select(sample, everything()) %>% 
+  left_join(metadata, by = c("sample" = "ID"))
+
+
+region_colors <- metadata %>% select(region_tissue_name, region_tissue_color, organ_name) %>% unique() %>% filter(organ_name == "Brain") %>% select(-organ_name)
+pal <-  region_colors$region_tissue_color
+pal <- setNames(pal, region_colors$region_tissue_name)
+# umap_res %>%  ggplot(aes(UMAP1, UMAP2,  color = organ_name)) +
+#    geom_point(alpha = 0.8) + scale_color_manual(values = pal)
+umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
+  geom_point(
+    aes(fill = region_tissue_name),
+    color = "gray25",
+    alpha = 0.7,
+    shape = 21,
+    size = 2,
+    stroke = 0.5
+  ) + 
+  scale_fill_manual(values = pal, na.value = "#FFFFFF") + 
+  # theme_bw() + theme(
+  #   panel.border = element_blank(),
+  #   panel.grid.major = element_blank(),
+  #   panel.grid.minor = element_blank(),
+  #   axis.line = element_line(colour = "black"),
+  #   legend.title = element_blank()
+  # )
+  xlim(-11,-6) +
+  ylim(-8,-2) +
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                          legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
+
+#ggsave("./final_plots/data_presentation/sample_focus_brain_umap_euclidean.pdf", width = 5, height = 5.5)
+
+```
+###Extra UMAP plot not in report
+```{r}
+#UMAP plot based only on brain samples, thus different than the plot above.
+
+wide_data = tmm_sample %>% select(c(target_id, metadata %>% filter(organ_name == "Brain") %>% .$ID))
+seed = 4
+n_epochs = 1000
+n_neighbors = 15
+set.seed(seed)
+    
+pca_res <-
+  wide_data %>% 
+  mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+  column_to_rownames(colnames(wide_data)[1]) %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = dim(.)[1])
+    
+    
+pc_lim <-
+  which(pca_res@R2cum > 0.8)[1]
+
+pc_lim_sd <-
+  rev(which(pca_res@sDev > 1))[1]
+
+set.seed(seed)
+umap_res <- pca_res@scores[, 1:pc_lim] %>%
+  umap(n_neighbors = n_neighbors,
+       n_epochs = n_epochs) %>%
+       #metric = "correlation") %>%
+  as_tibble() %>%
+  set_names(paste0("UMAP", 1:ncol(.))) %>%
+  mutate(sample = rownames(pca_res@scores)) %>%
+  select(sample, everything()) %>% 
+  left_join(metadata, by = c("sample" = "ID"))
+
+region_tissue_colors <- metadata %>% select(region_tissue_name, region_tissue_color) %>% unique()
+pal <-  region_tissue_colors$region_tissue_color
+pal <- setNames(pal, region_tissue_colors$region_tissue_name)
+
+# umap_res %>%  ggplot(aes(UMAP1, UMAP2,  color = organ_name)) +
+#    geom_point(alpha = 0.8) + scale_color_manual(values = pal)
+umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
+  geom_point(
+    aes(fill = region_tissue_name),
+    color = "gray25",
+    alpha = 0.7,
+    shape = 21,
+    size = 2,
+    stroke = 0.5
+  ) + scale_fill_manual(values = pal) + 
+  # theme_bw() + theme(
+  #   panel.border = element_blank(),
+  #   panel.grid.major = element_blank(),
+  #   panel.grid.minor = element_blank(),
+  #   axis.line = element_line(colour = "black"),
+  #   legend.title = element_blank()
+  # )
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          legend.title =element_blank(), 
+                         # legend.position = "bottom",
+                          legend.spacing.y = unit(-0.3, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, byrow = TRUE)) 
+
+#ggsave("./final_plots/data_presentation/sample_brain_umap_euclidean_l.pdf", width = 5.5, height = 3)
+```
+##Figure 2D -  grouped sample to sample correlation plots
+```{r}
+if(file.exists("./data/final_data/spearman_sample.csv")) {
+  sample_tmm_spearman <- read_csv("./data/final_data/spearman_sample.csv")
+} else {
+  sample_tmm_spearman <-  tmm_sample %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "sample_name")
+  write_csv(as.data.frame(sample_tmm_spearman) %>% as_tibble(),"./data/final_data/spearman_sample.csv")
+}
+
+correlation_to_different_organs <- tibble(sample_name = c(), correlation = c())
+for (sample in metadata$ID){
+  sample_organ <- metadata %>% filter(ID == sample) %>% .$organ_name %>% unique()
+  different_organ_samples <- metadata %>% filter(organ_name != sample_organ) %>% .$ID
+  sample_correlation <- sample_tmm_spearman %>% filter(sample_name %in% different_organ_samples) %>% select("sample_name", sample) %>% rename("correlation" = sample)
+  correlation_to_different_organs <- rbind(correlation_to_different_organs, sample_correlation) 
+}
+
+correlation_to_same_organ <- tibble(sample_name = c(), correlation = c())
+for (sample in metadata$ID){
+  sample_organ <- metadata %>% filter(ID == sample) %>% .$organ_name %>% unique()
+  same_organ_samples <- metadata %>% filter(organ_name == sample_organ) %>% filter(ID != sample) %>% .$ID
+  sample_correlation <- sample_tmm_spearman %>% filter(sample_name %in% same_organ_samples) %>% select("sample_name", sample) %>% rename("correlation" = sample)
+  correlation_to_same_organ <- rbind(correlation_to_same_organ, sample_correlation) 
+}
+
+correlation_to_same_tissue <- tibble(sample_name = c(), correlation = c())
+for (sample in metadata$ID){
+  sample_tissue <- metadata %>% filter(ID == sample) %>% .$tissue_name %>% unique()
+  same_tissue_samples <- metadata %>% filter(tissue_name == sample_tissue) %>% filter(ID != sample) %>% .$ID
+  sample_correlation <- sample_tmm_spearman %>% filter(sample_name %in% same_tissue_samples) %>% select("sample_name", sample) %>% rename("correlation" = sample)
+  correlation_to_same_tissue <- rbind(correlation_to_same_tissue, sample_correlation) 
+}
+
+correlation_to_same_tissue_by_tissue <- tibble(sample_name = c(), correlation = c(), tissue_name = c())
+for (sample in metadata$ID){
+  sample_tissue <- metadata %>% filter(ID == sample) %>% .$tissue_name %>% unique()
+  same_tissue_samples <- metadata %>% filter(tissue_name == sample_tissue) %>% .$ID
+  sample_correlation <- sample_tmm_spearman %>% filter(sample_name %in% same_tissue_samples) %>% select("sample_name", sample) %>% filter(sample_name != sample) %>%  left_join(metadata %>% select(ID, tissue_name), by= c("sample_name" = "ID")) %>% rename("correlation" = sample)
+  correlation_to_same_tissue_by_tissue <- rbind(correlation_to_same_tissue_by_tissue, sample_correlation) 
+}
+
+correlation_to_same_tissue_by_tissue <- correlation_to_same_tissue_by_tissue %>% 
+  mutate(tissue_name = str_to_sentence(tissue_name)) %>% 
+  group_by(tissue_name) %>% 
+  mutate(min = min(correlation)) %>% 
+  ungroup() %>% 
+  arrange(min)
+
+p1 <- correlation_to_different_organs %>%
+  ggplot(aes(correlation)) +
+  geom_histogram(bins = 100)  + xlim(0.5,1)+
+  theme_classic() + 
+  theme(panel.background = element_rect("gray90"),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.title.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = 0, add = 0)) + 
+  ggtitle("Different organs")
+
+p2 <- correlation_to_same_organ %>%
+  ggplot(aes(correlation)) +
+  geom_histogram(bins = 100) + xlim(0.5,1) +
+  theme_classic() + 
+  theme(panel.background = element_rect("gray90"),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = 0, add = 0)) +
+  ggtitle("Same organs")
+
+p3 <- correlation_to_same_tissue %>%
+  ggplot(aes(correlation)) +
+  geom_histogram(bins = 100) + xlim(0.5,1) +
+  theme_classic() +
+  theme(panel.background = element_rect("gray90"),
+        axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()
+        ) +
+  scale_y_continuous(expand = expansion(mult = 0, add = 0)) +
+  ggtitle("Same tissue")
+
+p4 <- correlation_to_same_tissue_by_tissue %>% 
+  mutate(tissue_name = factor(tissue_name, correlation_to_same_tissue_by_tissue$tissue_name %>% 
+                                unique())) %>% 
+  ggplot(aes(x = correlation, y = tissue_name)) +
+  geom_boxplot(outlier.size=0.3) + xlim(0.5,1) +
+  theme_bw() + 
+  xlab ("Spearman's roh") +
+  theme(axis.title.y = element_blank())
+
+p1 / p2 / p3 / p4 + plot_layout(heights = c(1, 1, 1, 15))
+
+#ggsave("./final_plots/data_presentation/spearman_corr_sample_vs_tissue_organ.pdf", height = 14, width = 4)
+```
+
+#Specificity and distribution annotation
+##Formulas
+```{r}
+#calculate_tau_score and hpa_gene_classification taken from Max Karlsson
+calculate_tau_score <- 
+  function(wide_data) {
+    max_exp <- 
+      apply(wide_data,
+            MARGIN = 1,
+            function(x) max(x, na.rm = T))
+    
+    N <- 
+      apply(wide_data,
+            MARGIN = 1,
+            function(x) length(which(!is.na(x))))
+    
+    expression_sum <- 
+      wide_data %>% 
+      sweep(MARGIN = 1, 
+            STATS = max_exp, 
+            FUN = `/`) %>% 
+      {1 - .} %>% 
+      apply(MARGIN = 1,
+            function(x) sum(x, na.rm = T))
+    
+    
+    tau_score <- 
+      (expression_sum / (N - 1)) %>% 
+      enframe("gene", "tau_score")
+    
+    tau_score
+  }
+
+hpa_gene_classification <- 
+  #feed in long data
+  function(data, expression_col, tissue_col, gene_col, enr_fold, max_group_n, det_lim = 1) {
+    data_ <- 
+      data %>% 
+      select(gene = gene_col,
+             expression = expression_col,
+             tissue = tissue_col) %>% 
+      mutate(expression = round(expression, 4)) 
+    
+    if(any(is.na(data_$expression))) stop("NAs in expression column")
+    if(any(is.na(data_$gene))) stop("NAs in gene column")
+    if(any(is.na(data_$tissue))) stop("NAs in tissue column")
+    
+    n_groups <- length(unique(data_$tissue))
+    
+    gene_class_info <- 
+      data_ %>%
+      group_by(gene) %>%
+      summarise(
+        
+        # Gene expression distribution metrics
+        mean_exp = mean(expression, na.rm = T),
+        min_exp = min(expression, na.rm = T),
+        max_exp = max(expression, na.rm = T), 
+        max_2nd = sort(expression)[length(expression)-1],
+        
+        # Expression frequency metrics
+        n_exp = length(which(expression >= det_lim)),
+        frac_exp = n_exp/length(expression[!is.na(expression)])*100,
+        
+        # Limit of enhancement metrics
+        lim = max_exp/enr_fold, 
+        
+        exps_over_lim = list(expression[which(expression >= lim & expression >= det_lim)]),
+        n_over = length(exps_over_lim[[1]]), 
+        mean_over = mean(exps_over_lim[[1]]),
+        min_over = ifelse(n_over == 0, NA,
+                          min(exps_over_lim[[1]])),
+        
+        max_under_lim = max(expression[which(expression < min_over)], det_lim*0.1),
+        
+        
+        exps_enhanced = list(which(expression/mean_exp >= enr_fold & expression >= det_lim)),
+        
+        
+        
+        
+        # Expression patterns
+        enrichment_group = paste(sort(tissue[which(expression >= lim & expression >= det_lim)]), collapse=";"),
+        
+        n_enriched = length(tissue[which(expression >= lim & expression >= det_lim)]),
+        n_enhanced = length(exps_enhanced[[1]]), 
+        enhanced_in = paste(sort(tissue[exps_enhanced[[1]]]), collapse=";"),
+        n_na = n_groups - length(expression),
+        max_2nd_or_lim = max(max_2nd, det_lim*0.1),
+        tissues_not_detected = paste(sort(tissue[which(expression < det_lim)]), collapse=";"),
+        tissues_detected = paste(sort(tissue[which(expression >= det_lim)]), collapse=";")) 
+    
+    
+    gene_categories <- 
+      gene_class_info %>%
+      
+      mutate(
+        spec_category = case_when(n_exp == 0 ~ "not detected", 
+                                  
+                                  # Genes with expression fold times more than anything else are tissue enriched
+                                  max_exp/max_2nd_or_lim >= enr_fold ~ "tissue enriched", 
+                                  
+                                  # Genes with expression fold times more than other tissues in groups of max group_n - 1 are group enriched
+                                  max_exp >= lim &
+                                    n_over <= max_group_n & n_over > 1 &
+                                    mean_over/max_under_lim >= enr_fold ~ "group enriched", 
+                                  
+                                  # Genes with expression in tissues fold times more than the mean are tissue enhance
+                                  n_enhanced > 0 ~ "tissue enhanced", 
+                                  
+                                  # Genes expressed with low tissue specificity
+                                  T ~ "low tissue specificity"), 
+        
+        
+        dist_category = case_when(frac_exp == 100 ~ "detected in all",
+                                  frac_exp >= 31 ~ "detected in many",
+                                  n_exp > 1 ~ "detected in some",
+                                  n_exp == 1 ~ "detected in single",
+                                  n_exp == 0 ~ "not detected"),
+        
+        spec_score = case_when(spec_category == "tissue enriched" ~ max_exp/max_2nd_or_lim,
+                               spec_category == "group enriched" ~ mean_over/max_under_lim, 
+                               spec_category == "tissue enhanced" ~ max_exp/mean_exp)) 
+    
+    
+    
+    
+    ##### Rename and format
+    gene_categories %>%
+      mutate(enriched_tissues = case_when(spec_category %in% c("tissue enriched", "group enriched") ~ enrichment_group,
+                                          spec_category == "tissue enhanced" ~ enhanced_in),
+             n_enriched = case_when(spec_category %in% c("tissue enriched", "group enriched") ~ n_enriched,
+                                    spec_category == "tissue enhanced" ~ n_enhanced)) %>%
+      select(gene, 
+             spec_category, 
+             dist_category, 
+             spec_score,
+             n_expressed = n_exp, 
+             fraction_expressed = frac_exp,
+             max_exp = max_exp,
+             enriched_tissues,
+             n_enriched,
+             n_na = n_na,
+             tissues_not_detected,
+             tissues_detected) 
+    
+  }	
+
+```
+
+##Annotation
+```{r}
+
+# Specificity classification at consensus level
+classification_consensus <- hpa_gene_classification(data = tmm_consensus_tissue, expression_col = "tmm", tissue_col = "consensus_tissue_name", gene_col = "target_id", enr_fold = 4, max_group_n = 5, det_lim = 1)
+
+consensus_tau <- calculate_tau_score(tmm_consensus_tissue  %>% 
+                                     spread(consensus_tissue_name, tmm)%>%  
+                                       mutate_if(is.numeric, function(x){log10(x+1)})%>% 
+                                       column_to_rownames("target_id")) 
+#category not detected has a very noisy tau, so no tau score for those
+classification_consensus <- classification_consensus %>% 
+  left_join(consensus_tau, by = c("gene" = "gene")) %>% 
+  mutate(tau_score = ifelse(spec_category == "not detected", NA, tau_score))
+
+#at region level
+classification_region <- hpa_gene_classification(data = tmm_region_tissue, expression_col = "tmm", tissue_col = "region_tissue_name", gene_col = "target_id", enr_fold = 4, max_group_n = 5, det_lim = 1)
+
+region_tau <- calculate_tau_score(tmm_region_tissue  %>% 
+                                    spread(region_tissue_name, tmm) %>%  
+                                    mutate_if(is.numeric, function(x){log10(x+1)}) %>% 
+                                    column_to_rownames("target_id") )
+
+classification_region <- classification_region %>% 
+  left_join(region_tau, by = c("gene" = "gene")) %>% 
+  mutate(tau_score = ifelse(spec_category == "not detected", NA, tau_score))
+
+#at tissue level
+classification_tissue <- hpa_gene_classification(data = tmm_tissue, expression_col = "tmm", tissue_col = "tissue_name", gene_col = "target_id", enr_fold = 4, max_group_n = 5, det_lim = 1)
+
+tissue_tau <- calculate_tau_score(tmm_tissue %>% 
+                                    spread(tissue_name, tmm) %>%  
+                                    mutate_if(is.numeric, function(x){log10(x+1)})%>%
+                                    column_to_rownames("target_id") )
+
+classification_tissue <- classification_tissue %>% 
+  left_join(tissue_tau, by = c("gene" = "gene")) %>% 
+  mutate(tau_score = ifelse(spec_category == "not detected", NA, tau_score))
+
+```
+
+#Figure 3
+##Figure 3A - Pie charts at tissue type level
+```{r}
+gene_category_pal <- c("Detected in all" = "#253494",
+                       "Detected in many" = "#2c7fb8",
+                       "Detected in some" = "#41b6c4",
+                       "Detected in single" = "#a1dab4",
+                       "Not detected " = "	#bebebe",
+                       "Low tissue specificity" = "grey40",
+                       "Tissue enhanced" = "#984ea3",
+                       "Group enriched" = "#FF9D00",
+                       "Tissue enriched" = "#e41a1c")
+
+plot_data <-
+  classification_tissue %>% 
+  rename(specificity = spec_category, distribution = dist_category) %>% 
+  select(gene, specificity, distribution) %>% 
+  gather(class_type, class, -1) %>% 
+  group_by(class_type, class) %>% 
+  count() %>%
+  group_by(class_type) %>% 
+  mutate(perc = 100 * n / sum(n),
+         label = paste0(n, "\n", round(perc, 1), "%")) %>% 
+  ungroup() %>% 
+  mutate(class = factor(str_to_sentence(class), str_to_sentence(c("tissue enriched", "group enriched",  "tissue enhanced", "low tissue specificity", "detected in all", "detected in many", "detected in some", "detected in single", "not detected"))),
+         class_type = factor(str_to_sentence(class_type),
+                             c("Specificity", "Distribution")))
+    
+plot_dodge = 0.1
+plot_data %>% 
+  arrange(match(class, rev(levels(class)))) %>% 
+  group_by(class_type) %>% 
+  mutate(y_stack = cumsum(n) - n/2) %>% 
+  {ggplot(., aes(1, n, fill = class, group = class, 
+                 label = label)) +
+      geom_col(show.legend = F, 
+               color = "white", 
+               width = 1) + 
+      geom_segment(aes(x = 1.5 + plot_dodge, xend = 1.5, 
+                       y = y_stack, yend = y_stack), size = 0.5) +
+      geom_text_repel(aes(x = 1.5 + plot_dodge, y = y_stack), 
+                      color = "black", nudge_x = plot_dodge, 
+                      segment.size = 0.5, size = 24/11) +
+      scale_fill_manual(values = gene_category_pal) + 
+      facet_wrap(~class_type) +
+      coord_polar("y",start = 0) +
+      theme_void() + 
+      scale_x_continuous(expand = expansion(c(0,0.8)))}
+
+
+ggsave("./final_plots/classification/class_pies_tissue_type.pdf",width = 6, height = 5)
+
+```
+##Figure 3B - Distibution for each tissue type
+```{r}
+
+classification_tissue %>% group_by(dist_category) %>% count()
+
+ordered_names_distr <- classification_tissue %>% 
+  filter(dist_category %in% c("detected in single", "detected in some", "detected in many", "detected in all")) %>% 
+  separate_rows(tissues_detected, sep = ";") %>% 
+  group_by(dist_category, tissues_detected) %>% 
+  count() %>% 
+  group_by(tissues_detected) %>% 
+  summarise(sum = sum(n)) %>% 
+  arrange(sum) %>% 
+  .$tissues_detected %>% 
+  str_to_sentence()
+
+detection_palette <- c("Detected in all" = "#253494",
+                        "Detected in many" = "#2c7fb8",
+                        "Detected in some" = "#41b6c4",
+                        "Detected in single" = "#a1dab4",
+                        "Not detected " = "grey")
+
+
+classification_tissue %>%
+  filter(
+    dist_category %in% c(
+      "detected in single",
+      "detected in some",
+      "detected in many",
+      "detected in all"
+    )
+  ) %>%
+  separate_rows(tissues_detected, sep = ";") %>%
+  group_by(dist_category, tissues_detected) %>%
+  count() %>%
+  mutate(tissues_detected = factor(str_to_sentence( tissues_detected), ordered_names_distr)) %>%
+  mutate(dist_category = factor(
+    str_to_sentence( dist_category),
+    c(
+      "Detected in single",
+      "Detected in some",
+      "Detected in many",
+      "Detected in all"
+    )
+  )) %>%
+  ggplot(aes(x = n, y = tissues_detected, fill = dist_category)) +
+  geom_col() +
+  scale_fill_manual(values = detection_palette) +
+  theme_classic() + theme(
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
+  ggtitle("Number of detected genes per tissue type")  +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+ ggsave("./final_plots/classification/tissue_detection_a.pdf", height = 11.5, width = 4.5)
+
+
+```
+
+##Figure 3C - Distribution and Tau score
+```{r}
+detection_palette <- c("Detected in all" = "#253494",
+                        "Detected in many" = "#2c7fb8",
+                        "Detected in some" = "#41b6c4",
+                        "Detected in single" = "#a1dab4",
+                        "Not detected " = "grey")
+
+p1 <- classification_tissue %>% 
+  mutate(dist_category = factor(str_to_sentence( dist_category), levels = rev(names(detection_palette))),
+         enriched_tissues = str_to_sentence(enriched_tissues)) %>% 
+  filter(dist_category != "Not detected") %>% 
+  ggplot(aes(x = tau_score, y = dist_category, fill = dist_category)) +
+  geom_violin() +
+  scale_fill_manual(values = gene_category_pal, name = "Specificity") +
+  xlab("Tau score") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(), 
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+    ) 
+
+#ggsave("./final_plots/classification/tau_to_distribution.pdf",width = 5.5, height = 4)
+
+
+p2 <- classification_tissue %>%
+  ggplot(aes(tau_score)) +
+  geom_histogram(bins = 100) +
+  theme_classic() +
+  ylab("Count")+
+  theme(panel.background = element_rect("gray90"),
+        #axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = 0, add = 0))
+
+p2/ p1 + plot_layout(heights = c(1, 3))
+
+ggsave("./final_plots/classification/distribution_and_dendrogram_tissue_w_overall.pdf",width = 6.5, height = 6)
+```
+###Extra Figures not in report
+```{r}
+detection_palette <- c("detected in all" = "#253494",
+                        "detected in many" = "#2c7fb8",
+                        "detected in some" = "#41b6c4",
+                        "detected in single" = "#a1dab4",
+                        "not detected " = "grey")
+
+ordered_names_distr <- classification_tissue %>%  
+  filter(dist_category %in% c("detected in single"#,
+                             # "detected in some"
+                              )) %>% 
+  separate_rows(tissues_detected, sep = ";") %>% 
+  group_by(dist_category, tissues_detected) %>% 
+  count() %>% 
+  group_by(tissues_detected) %>% 
+  summarise(sum = sum(n)) %>% 
+  arrange(sum) %>% 
+  .$tissues_detected
+
+classification_tissue %>%  
+  filter(
+    dist_category %in% c(
+      "detected in single"#,
+#
+    )
+  ) %>%
+  separate_rows(tissues_detected, sep = ";") %>%
+  group_by(dist_category, tissues_detected) %>%
+  count() %>%
+  mutate(tissues_detected = factor(tissues_detected, ordered_names_distr)) %>%
+  mutate(dist_category = factor(
+    dist_category,
+    c(
+      "detected in single",
+      "detected in some",
+      "detected in many",
+      "detected in all"
+    )
+  )) %>%
+  ggplot(aes(x = n, y = tissues_detected, fill = dist_category)) +
+  geom_col() +
+  scale_fill_manual(values = detection_palette) +
+  theme_classic() + theme(
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
+#  ggtitle("Number of detected genes per tissue type")  +
+  ggtitle("Number of detected genes detected in a single tissue")  +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+```
+```{r}
+detection_palette <- c("detected in all" = "#253494",
+                        "detected in many" = "#2c7fb8",
+                        "detected in some" = "#41b6c4",
+                        "detected in single" = "#a1dab4",
+                        "not detected " = "grey")
+
+ordered_names_distr <- classification_tissue %>%  
+  filter(dist_category %in% c("detected in single",
+                              "detected in some"
+                              )) %>% 
+  separate_rows(tissues_detected, sep = ";") %>% 
+  group_by(dist_category, tissues_detected) %>% 
+  count() %>% 
+  group_by(tissues_detected) %>% 
+  summarise(sum = sum(n)) %>% 
+  arrange(sum) %>% 
+  .$tissues_detected
+
+classification_tissue %>%  
+  filter(
+    dist_category %in% c(
+      "detected in single",
+      "detected in some"
+    )
+  ) %>%
+  separate_rows(tissues_detected, sep = ";") %>%
+  group_by(dist_category, tissues_detected) %>%
+  count() %>%
+  mutate(tissues_detected = factor(tissues_detected, ordered_names_distr)) %>%
+  mutate(dist_category = factor(
+    dist_category,
+    c(
+      "detected in single",
+      "detected in some",
+      "detected in many",
+      "detected in all"
+    )
+  )) %>%
+  ggplot(aes(x = n, y = tissues_detected, fill = dist_category)) +
+  geom_col() +
+  scale_fill_manual(values = detection_palette) +
+  theme_classic() + theme(
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
+  ggtitle("Number of detected genes per tissue type")  +
+ # ggtitle("Number of detected genes detected in a single tissue")  +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+```
+
+#Figure 4
+##Figure 4A - Pie charts at grouped tissue level
+```{r}
+gene_category_pal <- c("Detected in all" = "#253494",
+                       "Detected in many" = "#2c7fb8",
+                       "Detected in some" = "#41b6c4",
+                       "Detected in single" = "#a1dab4",
+                       "Not detected " = "	#bebebe",
+                       "Low tissue specificity" = "grey40",
+                       "Tissue enhanced" = "#984ea3",
+                       "Group enriched" = "#FF9D00",
+                       "Tissue enriched" = "#e41a1c")
+
+plot_data <-
+  classification_consensus %>% 
+  rename(specificity = spec_category, distribution = dist_category) %>% 
+  select(gene, specificity, distribution) %>% 
+  gather(class_type, class, -1) %>% 
+  group_by(class_type, class) %>% 
+  count() %>%
+  group_by(class_type) %>% 
+  mutate(perc = 100 * n / sum(n),
+         label = paste0(n, "\n", round(perc, 1), "%")) %>% 
+  ungroup() %>% 
+  mutate(class = factor(str_to_sentence(class), str_to_sentence(c("tissue enriched", "group enriched",  "tissue enhanced", "low tissue specificity", "detected in all", "detected in many", "detected in some", "detected in single", "not detected"))),
+         class_type = factor(str_to_sentence(class_type),
+                             c("Specificity", "Distribution")))
+    
+plot_dodge = 0.1
+plot_data %>% 
+  arrange(match(class, rev(levels(class)))) %>% 
+  group_by(class_type) %>% 
+  mutate(y_stack = cumsum(n) - n/2) %>% 
+  {ggplot(., aes(1, n, fill = class, group = class, 
+                 label = label)) +
+      geom_col(show.legend = F, 
+               color = "white", 
+               width = 1) + 
+      geom_segment(aes(x = 1.5 + plot_dodge, xend = 1.5, 
+                       y = y_stack, yend = y_stack), size = 0.5) +
+      geom_text_repel(aes(x = 1.5 + plot_dodge, y = y_stack), 
+                      color = "black", nudge_x = plot_dodge, 
+                      segment.size = 0.5, size = 24/11) +
+      scale_fill_manual(values = gene_category_pal) + 
+      facet_wrap(~class_type) +
+      coord_polar("y",start = 0) +
+      theme_void() + 
+      scale_x_continuous(expand = expansion(c(0,0.8)))}
+
+
+ggsave("./final_plots/classification/class_pies_grouped_tissue.pdf",width = 6, height = 5)
+```
+
+##Figure 4B - Speceficity for each grouped tissue
+```{r}
+classification_consensus %>% group_by(spec_category) %>% count() 
+
+ordered_names_sp <-
+  classification_consensus %>%
+  filter(spec_category %in% c("group enriched", "tissue enriched", "tissue enhanced")) %>%
+  separate_rows(enriched_tissues, sep = ";") %>%
+  group_by(spec_category, enriched_tissues) %>%
+  count() %>%
+  ungroup() %>% 
+  group_by(enriched_tissues) %>%
+  summarise(sum = sum(n)) %>%
+  ungroup() %>% 
+  arrange(sum) %>%
+  .$enriched_tissues %>% 
+  str_to_sentence()
+  
+  
+  
+
+specificity_palette <- rev(c("Not detected" = "grey",
+                           "Low tissue specificity" = "grey40",
+                           "Tissue enhanced" = "#984ea3",
+                           "Group enriched" = "#FF9D00",
+                           "Tissue enriched" = "#e41a1c"))
+
+classification_consensus %>%
+  filter(spec_category %in% c("group enriched", "tissue enriched", "tissue enhanced")) %>%
+  separate_rows(enriched_tissues, sep = ";") %>%
+  group_by(spec_category, enriched_tissues) %>%
+  count() %>%
+  mutate(enriched_tissues = factor(str_to_sentence(enriched_tissues), ordered_names_sp)) %>%
+  mutate(spec_category = factor(str_to_sentence(spec_category), c("Tissue enriched", "Group enriched",  "Tissue enhanced"))) %>%
+  ggplot(aes(x = n, y = enriched_tissues, fill = spec_category)) +
+  geom_col() +
+  scale_fill_manual(values = specificity_palette) +
+  xlab("Number of genes")+
+  theme_classic() + theme(
+    axis.title.y = element_blank(),
+  #  axis.title.x = element_blank(),
+    axis.line.y = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
+  ggtitle("Specificity category per consensus tissue") 
+
+#ggsave("./final_plots/classification/consensus_tissue_specificity.pdf", height = 7, width = 5.5)
+```
+
+
+##Figure 4C - Specificity and Tau score
+```{r}
+
+
+specificity_palette <- rev(c("Not detected" = "grey",
+                           "Low tissue specificity" = "grey40",
+                           "Tissue enhanced" = "#984ea3",
+                           "Group enriched" = "#FF9D00",
+                           "Tissue enriched" = "#e41a1c"))
+
+p1 <- classification_consensus %>% 
+  mutate(spec_category = factor(str_to_sentence( spec_category), levels = names(specificity_palette)),
+         enriched_tissues = str_to_sentence(enriched_tissues)) %>% 
+  filter(spec_category != "Not detected") %>% 
+  ggplot(aes(x = tau_score, y = spec_category, fill = spec_category)) +
+  geom_violin() +
+  scale_fill_manual(values = gene_category_pal, name = "Specificity") +
+  xlab("Tau score") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(), 
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+    ) 
+
+#ggsave("./final_plots/classification/tau_to_specificity.pdf",width = 5.5, height = 4)
+
+
+p2 <- classification_consensus %>%
+  ggplot(aes(tau_score)) +
+  geom_histogram(bins = 100) +
+  theme_classic() +
+  ylab("Count")+
+  theme(panel.background = element_rect("gray90"),
+        #axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = 0, add = 0))
+
+p2/ p1 + plot_layout(heights = c(1, 3))
+
+ggsave("./final_plots/classification/specificity_and_dendrogram_consensus_w_overall.pdf",width = 7, height = 6)
+
+```
+
+##Figure 4D - Gene annotation alluvial plot
+```{r}
+width = 0.1
+
+alluv_1 <-
+  
+  classification_consensus %>%
+  mutate(Specificity = str_to_sentence(spec_category),
+          Distribution = str_to_sentence(dist_category)) %>%
+  select(Specificity,
+         Distribution) %>%
+  mutate(row_n = row_number()) %>%
+  gather(bar, chunk, -row_n) %>%
+  mutate(color_vars = 1) %>%
+  group_by(row_n) %>%
+  mutate(chunk_color = chunk[match(c("Specificity",
+                                     "Distribution")[color_vars], bar)]) %>% 
+  ungroup() %>%
+  
+  
+  mutate(chunk = factor(chunk, levels = c('Tissue enriched', 'Group enriched', 
+                                          'Tissue enhanced', 'Low tissue specificity', 
+                                          'Detected in single',
+                                          'Detected in some', 
+                                          'Detected in many', 
+                                          'Detected in all',
+                                          'Not detected')),
+         bar = factor(bar, levels = c("Specificity",
+                                      "Distribution"))) %>%
+  
+  
+  ggplot(aes(x = bar, stratum = chunk, alluvium = row_n,
+             y = 1)) +
+  
+  geom_flow(aes(fill = chunk_color), 
+            show.legend = F, width = width,
+            knot.pos = 1/6) +
+  geom_stratum(aes(fill = chunk), 
+               show.legend = F, color = NA, width = width) +
+  
+  scale_x_discrete(expand = c(.1, .1), position = "top") +
+  scale_fill_manual(values = c(gene_category_pal)) + 
+  
+  
+  theme(axis.text.y = element_text(size = 18, face = "bold"),
+        axis.text.x = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.background = element_blank(), 
+        axis.title = element_blank()) +
+  coord_flip()
+
+# alluv_1
+
+flow_data <-
+  ggplot_build(alluv_1)$data[[1]] %>%
+  as_tibble() %>%
+  {
+    if ("side" %in% names(.)) {
+      .
+    } else{
+      mutate(.,
+             side = case_when(flow == "from" ~ "start",
+                              flow == "to" ~ "end"))
+    }
+  }
+
+
+
+stratum_data <- 
+  ggplot_build(alluv_1)$data[[2]]
+
+flow_data_labels <-
+  flow_data %>%
+  as_tibble() %>%
+  select(x, stratum, group, side, ymin, ymax) %>%
+  pivot_wider(names_from = side,
+              values_from = c(x, stratum, ymin, ymax)) %>%
+  mutate_at(
+    c(
+      "x_end",
+      "ymax_end",
+      "ymin_end",
+      "x_start",
+      "ymax_start",
+      "ymin_start"
+    ),
+    as.numeric
+  ) %>%
+  group_by(stratum_start, stratum_end, x_start, x_end) %>%
+  summarise(
+    y_end = (min(ymin_end) + max(ymax_end)) / 2,
+    y_start = (min(ymin_start) + max(ymax_start)) / 2,
+    size = max(ymax_start) - min(ymin_start)
+  )
+
+alluv_2 <- 
+  alluv_1 +
+  geom_text(data = flow_data_labels,
+            aes(x = x_start + width/2,
+                y = y_start, 
+                label = size), 
+            inherit.aes = F, 
+            size = 3,
+            angle = -90,
+            hjust = 1,
+            vjust = 0.5) +
+  geom_text(data = flow_data_labels,
+            aes(x = x_end - width/2,
+                y = y_end, 
+                label = size), 
+            inherit.aes = F, 
+            size = 3, 
+            angle = -90,
+            hjust = 0,
+            vjust = 0.5) +
+  
+  # Stratum label
+  
+  geom_text(data = stratum_data %>%
+              filter(x == 1),
+            aes(x = x - width/2,
+                y = y,
+                label = stratum),
+            size = 4, 
+            vjust = 1.5,
+            inherit.aes = F) + 
+  geom_text(data = stratum_data %>%
+              filter(x == 2),
+            aes(x = x + width/2,
+                y = y,
+                label = stratum),
+            size = 4, 
+            vjust = -0.5,
+            inherit.aes = F) + 
+  
+  geom_text(data = stratum_data,
+            aes(x = x, 
+                y = y,
+                label = ymax - ymin), 
+            size = 4, 
+            fontface = "bold",
+            color = "white",
+            inherit.aes = F)
+
+
+alluv_2
+ggsave("./final_plots/classification/alluvial_classification.pdf",width = 8, height = 3)
+
+```
+###Extra figures not in report
+```{r}
+organ_colors <- metadata %>% select(consensus_tissue_name, consensus_tissue_color) %>% unique()
+pal <-  organ_colors$consensus_tissue_color
+pal <- setNames(pal, str_to_sentence(organ_colors$consensus_tissue_name))
+
+
+specificity_palette <- rev(c("Not detected" = "grey",
+                           "Low tissue specificity" = "grey40",
+                           "Tissue enhanced" = "#984ea3",
+                           "Group enriched" = "#FF9D00",
+                           "Tissue enriched" = "#e41a1c"))
+
+
+class_table_temp <-
+  classification_consensus %>%
+  select(gene, spec_category, enriched_tissues) %>%
+  separate_rows(enriched_tissues, sep = ";") %>%
+  mutate(spec_category = factor(str_to_sentence( spec_category), levels = names(specificity_palette)),
+         enriched_tissues = str_to_sentence(enriched_tissues))
+
+plot_dendro <-
+  tmm_consensus_tissue %>% 
+  select(target_id, consensus_tissue_name, tmm) %>% 
+  mutate(consensus_tissue_name = str_to_sentence(consensus_tissue_name)) %>%
+  spread(target_id, tmm) %>%
+  column_to_rownames("consensus_tissue_name")  %>%
+  t() %>%
+  cor(method = "spearman") %>%
+  
+  {1 - .} %>%
+  as.dist() %>% 
+  hclust(method = "average") %T>%
+  plot %>%
+  dendro_data()
+  
+  
+dendro_plot_data <- 
+  left_join(plot_dendro$segments, 
+            plot_dendro$labels, 
+            by = c("x" = "x", "yend" = "y")) 
+
+left_plot <- 
+  dendro_plot_data %>%
+  ggplot() +
+  geom_segment(aes(x=y, y=x, xend=yend, yend=xend, group = label))+
+  geom_rect(aes(xmin=0, ymin=x + 0.5, 
+                xmax=-0.02, ymax=xend - 0.5, 
+                fill = label), 
+            show.legend = F) +
+  scale_color_manual(values = pal)+
+  scale_fill_manual(values = pal)+
+  scale_x_reverse(expand = expansion(0), position = "top")+
+  scale_y_continuous(expand = expansion()) +
+  xlab("1 - Spearman's rho") +
+  
+  theme(axis.text.y = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        plot.margin = unit(c(1,1,1,1), units = "mm"), 
+        panel.background = element_blank()) 
+
+right_plot <- 
+  class_table_temp %>%
+  filter(!is.na(enriched_tissues)) %>%
+  group_by(enriched_tissues, spec_category) %>%
+  summarise(n_genes = n()) %>%
+  ungroup() %>%
+  mutate(enriched_tissues = factor(enriched_tissues, levels = plot_dendro$labels$label),
+         spec_category = factor(spec_category, names(specificity_palette))) %>%
+  ggplot(aes(n_genes, enriched_tissues, fill = spec_category)) +
+  geom_col(width = 0.8, size = 0.1) +
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_fill_manual(values = gene_category_pal, name = "Specificity") +
+  # coord_flip() +
+  xlab("Number of genes") +
+  
+  scale_x_continuous(position = "top", expand = expansion(c(0, 0.1))) + 
+  scale_y_discrete(expand = expansion()) +
+  
+  theme(axis.text.y = element_text(hjust = 0.5), 
+        legend.position = c(0.7, 0.5),
+        axis.title.y = element_blank(),
+        panel.border = element_blank())
+
+left_plot + right_plot +
+  plot_layout(widths = c(0.3, 1))
+
+
+ggsave("./final_plots/classification/specificity_and_dendrogram_consensus.pdf",width = 7, height = 7)
+
+```
+#Figure 5
+```{r}
+##Plot based on Max Karlsson's network plot
+
+classification_network_plot_2 <- 
+  function(class_table, gene_col, spec_col, enriched_col, spec_filter, pal, savename, enriched_sep = ";", 
+           node_filter_rank = 2, node_filter_show_cat = c("tissue enriched"), 
+           node_filter_min = 2, node_filter_n_show = 8, scale_factor = 1) {
+    
+    enrichment_table <- 
+      class_table %>% 
+      select(gene = gene_col, 
+             spec = spec_col, 
+             enriched = enriched_col) %>% 
+      filter(spec %in% spec_filter) %>% 
+      group_by(enriched, spec) %>% 
+      summarise(n_genes = n()) %>%
+      ungroup()
+    
+    net_data <-
+      enrichment_table %>% 
+      mutate(all_enriched = enriched) %>%
+      separate_rows(enriched, sep = enriched_sep) %>%
+      group_by(enriched, spec) %>% 
+      mutate(rank = rank(-n_genes, ties.method = "min")) %>%
+      group_by(all_enriched) %>%
+      mutate(any_low_rank = any(rank <= node_filter_rank)) %>%
+      ungroup() %>%
+      
+      filter((spec == node_filter_show_cat | any_low_rank | n_genes >= node_filter_n_show) &
+               (spec == node_filter_show_cat | n_genes >= node_filter_min)) %>% 
+      mutate(edge_id = paste("enriched:", all_enriched)) %>% 
+      arrange(n_genes)
+    
+    net_edges <- 
+      net_data %$% 
+      tibble(node1 = enriched, node2 = edge_id, n = n_genes) %>% 
+      unique()
+    
+    g <-
+      net_edges %>%
+      graph_from_data_frame(directed = FALSE) %>%
+      ggraph(layout = "kk") 
+    
+    link_map <- 
+      net_edges %>% 
+      gather(node, id, -(3)) %>% 
+      mutate(tissue_node = node == "node1", 
+             color_id = case_when(tissue_node ~ id, 
+                                  grepl(";", id) ~ "Group enriched",
+                                  !grepl(";", id) ~ "Tissue enriched"), 
+             label = ifelse(tissue_node, color_id, n)) %>%
+      select(n, node, id, tissue_node, color_id, label) %>%
+      unique()
+    
+    
+    edge_data <- get_edges()(g$data)
+    node_data <- 
+      get_nodes()(g$data) %>% 
+      as_tibble() %>%
+      left_join(link_map, 
+                by = c("name" = "id")) 
+    
+    
+    fig <- 
+      g + 
+      geom_edge_arc(aes(width = n), 
+                    color = "gray", 
+                    strength = 0, 
+                    alpha = 0.5,
+                    show.legend = F) + 
+      scale_edge_alpha_continuous(range = c(0.3, 1)) +
+      scale_edge_width_continuous(range = c(1, 3)) +
+      
+      geom_node_point(data = node_data  %>%
+                        filter(!tissue_node),
+                      aes(size = log10(n), 
+                          fill = color_id), 
+                      stroke = 1,
+                      # size = 10,
+                      shape = 21,
+                      show.legend = F)+
+      geom_node_point(data = node_data %>%
+                        filter(tissue_node),
+                      aes(fill = color_id), 
+                      stroke = 1,
+                      size = 20 * scale_factor,
+                      shape = 21,
+                      show.legend = F)+
+      geom_node_text(data = node_data,
+                     aes(label = label),
+                     size = 4 * scale_factor) +
+      scale_size_continuous(range = c(5, 10) * scale_factor) +
+      scale_fill_manual(values = pal) +
+      
+      theme_void()
+    
+    ## ----- Save
+    
+    
+    cyto_summary <- 
+      net_edges %>% 
+      mutate(category = ifelse(!grepl(enriched_sep, node2), "Tissue enriched", "Group enriched"), 
+             node_id = unclass(factor(node2)),
+             node1 = str_to_sentence(node1), 
+             n_sqrt = sqrt(n), 
+             str_len = str_length(node1)) %>%
+      select(category, node1, node2, node_id, n, n_sqrt, str_len) 
+    
+    cyto_summary %>% 
+      write_delim("cytoscape nodes summary.txt", delim = "\t")
+  #    write_delim(savepath(paste(savename, "cytoscape nodes summary.txt")), delim = "\t")
+    
+    bind_rows(cyto_summary %>% 
+                left_join(pal %>% 
+                            enframe("node1", "color")) %>% 
+                select(node_id = node1, 
+                       color) %>% 
+                unique() %>%
+                mutate(node_type = "Tissue"),
+              cyto_summary %>% 
+                mutate(color = case_when(category == "Tissue enriched" ~ "#e41a1c",
+                                         category == "Group enriched" ~ "#FF9D00"), 
+                       node_id = as.character(node_id)) %>%
+                select(node_id, color) %>% 
+                unique() %>%
+                
+                mutate(node_type = "Enrichment")) %>%
+      mutate(color2 = case_when(node_type == "Enrichment" ~ color,
+                                node_type == "Tissue" ~ "#D3D3D3FF"),
+             color3 = case_when(node_type == "Enrichment" ~ color,
+                                node_type == "Tissue" ~ "#BEBEBEFF")) %>% 
+      
+      write_delim("cytoscape nodes color.txt", delim = "\t") 
+      #write_delim(savepath(paste(savename, "cytoscape nodes color.txt")), delim = "\t") 
+    
+    bind_rows(cyto_summary %>% 
+                select(node_id = node1) %>% 
+                mutate(label = node_id) %>%
+                unique(),
+              cyto_summary %>% 
+                mutate(node_id = as.character(node_id), 
+                       label = as.character(n)) %>%
+                select(node_id, label) %>% 
+                unique()) %>% 
+      write_delim("cytoscape nodes label whole group.txt",
+      #write_delim(savepath(paste(savename, "cytoscape nodes label whole group.txt")), 
+                  delim = "\t")
+    
+    ## ----
+    
+    fig
+  }
+```
+
+```{r}
+
+
+organ_colors <- metadata %>% select(consensus_tissue_name, organ_color) %>% unique()
+pal1 <-  organ_colors$organ_color
+pal1 <- setNames(pal1, organ_colors$consensus_tissue_name)
+
+specificity_palette <- rev(c("Not detected" = "grey",
+                             "Tissue" = "grey",
+                           "Low tissue specificity" = "grey40",
+                           "Tissue enhanced" = "#984ea3",
+                           "Group enriched" = "#FF9D00",
+                           "Tissue enriched" = "#e41a1c"))
+
+library(influential)
+
+classification_network_plot_2(
+  class_table = classification_consensus %>% mutate(spec_category = str_to_sentence(spec_category)),
+  gene_col = "gene",
+  spec_col = "spec_category",
+  enriched_col = "enriched_tissues",
+  spec_filter = c("Tissue enriched", "Group enriched"),
+  pal = c(pal1, specificity_palette),
+  savename = "test_interconsensus",
+  enriched_sep = ";",
+  node_filter_rank = 2,
+  node_filter_show_cat = c("Tissue enriched"),
+  node_filter_min = 2,
+  node_filter_n_show = 5,
+  scale_factor = 0.8
+) 
+
+
+ggsave("./final_plots/data_presentation/nework_plot2-filter.pdf", height = 20, width = 20)
+```
+
+#Read Comparison data
+```{r}
+comp_metadata <- read_csv("./data/final_data/comparison_metadata-init-1-0.csv")
+
+human_atlas_tissue <-
+  read_delim("./data/human_hpa/rna_tissue_consensus.tsv", delim = "\t") %>%
+  mutate(source = "hpa_consensus") %>%
+  group_by(Gene) %>%
+  mutate(nx = case_when(nTPM == 0 ~ 0,
+                        T ~ nTPM / sqrt(sd(nTPM)))) %>%
+  ungroup() #%>% 
+  # # just necessary if read data of multiple different sources, then would make sense to average out samples named the same
+  # # just from one source atm, so no need for this.
+  # group_by(Tissue, Gene) %>%
+  # summarise(nTPM = mean(nTPM, na.rm = T)) %>% 
+  # ungroup()
+
+hpa_comp <- human_atlas_tissue %>% left_join(
+  comp_metadata %>%
+    select(hpa_consensus_name, comparison_tissue_name) %>%
+    distinct() %>%
+    filter(!is.na(hpa_consensus_name)) %>%
+    filter(!is.na(comparison_tissue_name)),
+  by = c("Tissue" = "hpa_consensus_name")) %>% 
+  filter(!is.na(comparison_tissue_name)) %>% 
+  group_by(Gene,comparison_tissue_name) %>% 
+  summarise(tmm = max(nTPM),
+            nx = max(nx)) %>% 
+  ungroup() %>% 
+  rename(tissue = comparison_tissue_name)
+
+rat_tissue <-
+  read_csv("./data/final_data/final_tmm_tissue_name.csv") %>% 
+  # #omit gather, data should be  already in long format
+  # gather(sample, tmm,-1) %>%
+  group_by(target_id) %>%
+  mutate(nx = case_when(tmm == 0 ~ 0,
+                        T ~ tmm / sqrt(sd(tmm)))) %>%
+  ungroup()
+  
+
+# select tissues and pool tissues that will get compared
+rat_tissue_comp <- rat_tissue %>% left_join(comp_metadata %>% 
+                                              select(tissue_name, comparison_tissue_name), by = c("tissue_name" = "tissue_name")) %>%
+  filter(!is.na(comparison_tissue_name)) %>% 
+  group_by(target_id, comparison_tissue_name) %>% 
+  summarise(tmm = max(tmm),
+            nx = max(nx)) %>% 
+  ungroup() %>% 
+  rename(tissue = comparison_tissue_name)
+
+#check if all have the same tissue
+all(rat_tissue_comp %>% distinct(tissue) == hpa_comp %>% distinct(tissue) )
+
+```
+#Read ortholog data
+```{r}
+#Select either "HPA" or "ensemble"
+ortholog_data_from <- "HPA"
+#ortholog_data_from <- "ensemble"
+
+include_many2many <- TRUE
+include_one2many <- TRUE
+
+#Only needed for ensembl:
+#define ensemble version
+version     <- 103
+organism_db <- "rnorvegicus_gene_ensembl"
+#mart <- useEnsembl ( biomart="genes" , dataset=organism_db , version=version )
+
+if (ortholog_data_from == "HPA"){
+  homolog_data <- read.table("./data/human_hpa/kalle/ensembl_rat_ortholog.tsv", sep = "\t", header = TRUE) %>% 
+    filter(ensrnog_id %in% rat_tissue$target_id) %>% 
+    filter(ensg_id %in% human_atlas_tissue$Gene)
+} else if (ortholog_data_from == "ensemble"){
+  homolog_data <- getBM( attributes=c( "ensembl_gene_id", "hsapiens_homolog_ensembl_gene", "hsapiens_homolog_orthology_type") , mart=mart ) %>%
+    filter(hsapiens_homolog_ensembl_gene != "") %>% 
+    filter(ensembl_gene_id %in% rat_tissue$target_id) %>% 
+    filter(hsapiens_homolog_ensembl_gene %in% human_atlas_tissue$Gene) %>% 
+    rename(ensrnog_id = ensembl_gene_id, ensg_id = hsapiens_homolog_ensembl_gene, ortholog_type = hsapiens_homolog_orthology_type)
+}
+
+if (include_many2many == FALSE){
+  homolog_data <- homolog_data %>% filter(!ortholog_type == "ortholog_many2many")
+}
+if (include_one2many == FALSE){
+  homolog_data <- homolog_data %>% filter(!ortholog_type == "ortholog_one2many")
+}
+
+```
+
+
+#Figure 6
+```{r}
+comparison_colors_tbl <- rbind(
+  comp_metadata %>% select(name = comparison_tissue_name, color = consensus_tissue_color) %>% distinct(), 
+  comp_metadata %>% select(name = tissue_name, color = tissue_color) %>%  distinct()
+  ) %>% 
+  distinct() %>% 
+  drop_na() %>% 
+  mutate(name = str_to_sentence(name))
+
+pal <- comparison_colors_tbl$color
+pal <- setNames(pal, str_to_sentence(comparison_colors_tbl$name))
+
+
+plot_data1 <- 
+  comp_metadata %>% 
+  select(tissue_name, comparison_tissue_name, organ_name) %>% 
+  unique() %>% 
+  drop_na() %>% 
+  mutate(tissue_name = str_to_sentence(tissue_name), comparison_tissue_name = str_to_sentence(comparison_tissue_name)) %>% 
+  arrange(organ_name, comparison_tissue_name) %>% 
+  mutate(plot_order = row_number()) %>% select(-organ_name)
+
+plot_data2 <- 
+  plot_data1 %>%
+  gather(column, label, -plot_order) %>%
+  group_by(label, column) %>% 
+  summarise(plot_order = mean(plot_order))  %>%
+  ungroup() %>% 
+  mutate(label = label,
+         column = factor(column,
+                         c("tissue_name", 
+                           "comparison_tissue_name"
+                           )))
+plot_data3 <- 
+  plot_data1 %>% 
+  group_by(comparison_tissue_name) %>% 
+  mutate(left_pos = mean(plot_order))
+
+plot_data4 <- 
+  plot_data2 %>% 
+  left_join(comparison_colors_tbl,
+            by = c("label" = "name")) %>% 
+  group_by(column, label) %>% 
+  summarise(miny = min(plot_order) - 0.5,
+            maxy = max(plot_order) + 0.5)
+
+ggplot() +
+  geom_rect(data = plot_data4, 
+           aes(xmin = column, xmax = column, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "comparison_tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 2, xmax = 2.5, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 0.5, xmax = 1, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F, width = 10
+         ) +
+  geom_segment(
+    data = plot_data3,
+    aes(
+      x = "comparison_tissue_name",
+      xend = "tissue_name",
+      y = left_pos,
+      yend = plot_order,
+      color = tissue_name
+    ),
+    show.legend = F,
+    alpha = 0.5,
+    size = 2
+  )+
+  geom_text(
+    data = plot_data2 %>% filter(column == "comparison_tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 0,
+    size = 2 * 5 / 6,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_text(
+    data = plot_data2 %>% filter(column == "tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 1,
+    size = 2 * 5 / 6,
+    show.legend = F,
+    label.padding = unit(0, "mm")
+  ) +
+  # geom_label(
+  #   data = plot_data2 %>%
+  #     filter(column == "organ_name"),
+  #   #aes(x = column, y = plot_order, label = label),
+  #   aes(x = column, y = plot_order, label = gsub(" ", "\n", label)),
+  #   show.legend = F,
+  #   label.size = 0,
+  #   hjust = 1,
+  #   lineheight = 0.7,
+  #   label.padding = unit(0, "mm"),
+  #   size = 2 * 5 / 6
+  # ) +
+  scale_y_reverse() +
+  scale_x_discrete(labels  = c("Rat tissue", "Comparison tissue"),position = "top") +
+  scale_fill_manual(values = pal) +
+  scale_color_manual(values = pal) +
+  theme_void() +
+  theme(axis.text.x = element_text())
+#ggsave("final_plots/comparison/comparison_tissues_rat.pdf", height = 5, width = 4)
+```
+```{r}
+comparison_colors_tbl <- rbind(
+  comp_metadata %>% select(name = comparison_tissue_name, color = consensus_tissue_color) %>% distinct(), 
+  comp_metadata %>% select(name = hpa_consensus_name, color = tissue_color) %>%  distinct()
+  ) %>% 
+  distinct() %>% 
+  drop_na() %>% 
+  mutate(name = str_to_sentence(name))
+
+pal <- comparison_colors_tbl$color
+pal <- setNames(pal, str_to_sentence(comparison_colors_tbl$name))
+
+
+plot_data1 <- 
+  comp_metadata %>% 
+  select(hpa_consensus_name, comparison_tissue_name, organ_name) %>% 
+  unique() %>% 
+  drop_na() %>% 
+  mutate(hpa_consensus_name = str_to_sentence(hpa_consensus_name), comparison_tissue_name = str_to_sentence(comparison_tissue_name)) %>% 
+  arrange(organ_name, comparison_tissue_name) %>% 
+  mutate(plot_order = row_number()) %>% select(-organ_name)
+
+plot_data2 <- 
+  plot_data1 %>%
+  gather(column, label, -plot_order) %>%
+  group_by(label, column) %>% 
+  summarise(plot_order = mean(plot_order))  %>%
+  ungroup() %>% 
+  mutate(label = label,
+         column = factor(column,
+                         c("comparison_tissue_name", "hpa_consensus_name"
+                           )))
+plot_data3 <- 
+  plot_data1 %>% 
+  group_by(comparison_tissue_name) %>% 
+  mutate(left_pos = mean(plot_order))
+
+plot_data4 <- 
+  plot_data2 %>% 
+  left_join(comparison_colors_tbl,
+            by = c("label" = "name")) %>% 
+  group_by(column, label) %>% 
+  summarise(miny = min(plot_order) - 0.5,
+            maxy = max(plot_order) + 0.5)
+
+ggplot() +
+  geom_rect(data = plot_data4, 
+           aes(xmin = column, xmax = column, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "hpa_consensus_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 2, xmax = 2.5, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F
+         ) +
+    geom_rect(data = plot_data4 %>% filter (column == "comparison_tissue_name"), 
+          # aes(xmin = column, xmax = column, ymin = miny, ymax = maxy, color = color), 
+           aes(xmin = 0.5, xmax = 1, ymin = miny, ymax =  maxy, fill = label), 
+           show.legend = F, width = 10
+         ) +
+  geom_segment(
+    data = plot_data3,
+    aes(
+      x = "comparison_tissue_name",
+      xend = "hpa_consensus_name",
+      y = left_pos,
+      yend = plot_order,
+      color = hpa_consensus_name
+    ),
+    show.legend = F,
+    alpha = 0.5,
+    size = 2
+  )+
+  geom_text(
+    data = plot_data2 %>% filter(column == "hpa_consensus_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 0,
+    size = 2 * 5 / 6,
+    label.padding = unit(0, "mm")
+  ) +
+  geom_text(
+    data = plot_data2 %>% filter(column == "comparison_tissue_name"),
+    aes(x = column, y = plot_order, label = label),
+    hjust = 1,
+    size = 2 * 5 / 6,
+    show.legend = F,
+    label.padding = unit(0, "mm")
+  ) +
+  # geom_label(
+  #   data = plot_data2 %>%
+  #     filter(column == "organ_name"),
+  #   #aes(x = column, y = plot_order, label = label),
+  #   aes(x = column, y = plot_order, label = gsub(" ", "\n", label)),
+  #   show.legend = F,
+  #   label.size = 0,
+  #   hjust = 1,
+  #   lineheight = 0.7,
+  #   label.padding = unit(0, "mm"),
+  #   size = 2 * 5 / 6
+  # ) +
+  scale_y_reverse() +
+  scale_x_discrete(labels  = c("Comparison tissue", "Human Tissue"),position = "top") +
+  scale_fill_manual(values = pal) +
+  scale_color_manual(values = pal) +
+  theme_void() +
+  theme(axis.text.x = element_text())
+#ggsave("final_plots/comparison/comparison_tissues_human_rev.pdf", height = 5, width = 4)
+
+```
+
+
+#Batch Correction
+```{r}
+
+#Do batch correction
+#join rat and human tmm data together
+joined_atlas_comparison_temp <- rat_tissue_comp %>%
+  inner_join(homolog_data, by = c("target_id" = "ensrnog_id")) %>%
+  unite(mutual_id, target_id, ensg_id, sep = "_") %>%
+  mutate(species = "rat") %>%
+  select(mutual_id, tissue, species , tmm) %>%
+  bind_rows(
+    hpa_comp %>%
+      inner_join(homolog_data, by = c("Gene" = "ensg_id")) %>%
+      unite(mutual_id, ensrnog_id, Gene, sep = "_") %>%
+      mutate(species = "human") %>%
+      select(mutual_id, tissue, species , tmm)
+  )
+  #### if tmm is under 0 then it is equal to 0
+  #mutate(tmm = ifelse(tmm < 1, 0, tmm ))
+
+#long table with inf of on tissue and species
+joined_atlas_comparison_temp_2 <- joined_atlas_comparison_temp %>% 
+  unite(id, tissue, species, sep = "_") %>% 
+  separate(id, into = c("tissue", "species"), sep = "_", remove = F) 
+
+#wide table only with tmm
+joined_atlas_comparison_temp3_tmm <-
+  joined_atlas_comparison_temp_2 %>% 
+  select(mutual_id, id, tmm) %>% 
+  spread(id, tmm) %>% 
+  column_to_rownames("mutual_id") 
+
+#log scale
+joined_atlas_comparison_temp3_limma <-
+  joined_atlas_comparison_temp3_tmm %>%
+  {log10(. + 1)} %>%
+  limma::removeBatchEffect(batch = colnames(joined_atlas_comparison_temp3_tmm) %>%
+                             str_extract("_.*$"))
+#put them together in the long format
+joined_atlas_comparison<- 
+  joined_atlas_comparison_temp_2 %>%
+  left_join(joined_atlas_comparison_temp3_tmm %>% 
+              as_tibble(rownames = "mutual_id") %>% 
+              gather(id, tmm, -1)) %>% 
+  left_join(joined_atlas_comparison_temp3_limma %>% 
+              as_tibble(rownames = "mutual_id") %>% 
+              gather(id, limma_log1p_tmm, -1)) 
+```
+
+#Figure 7
+##Figure 7A - Cross species dendrogramm
+```{r}
+
+hclust4RNAseq <- function(df, correlation_method = "spearman"){
+  #wide dataframe as input 
+  #to get correlation between samples, where rows are genes columns are samples
+  #to get correlation between genes across samples, input df with genes as columns
+  #can use later for dendogram making: ggdendrogram([hclust4RNAseq_results], rotate = FALSE, size = 10, face = "bold")
+  similarity <- cor(df, method=correlation_method, use="pairwise.complete.obs")
+  dissimilarity <- 1 - similarity
+  hcl <- hclust(as.dist(dissimilarity), "average")
+  return (hcl)
+} 
+
+
+organ_colors <- comp_metadata %>% select(comparison_tissue_name, consensus_tissue_color) %>% drop_na() %>% distinct()
+pal <-  organ_colors$consensus_tissue_color
+pal <- setNames(pal, str_to_sentence(organ_colors$comparison_tissue_name))
+
+shape_def <- c(21, 22)
+shape_def <- setNames(shape_def, c("Human", "Rat"))
+
+
+plot_comp_dendro_data <- joined_atlas_comparison %>% 
+  select(mutual_id, id, limma_log1p_tmm) %>% 
+  spread(id, limma_log1p_tmm) %>% 
+  column_to_rownames("mutual_id") %>% 
+  cor(method = "spearman", use="pairwise.complete.obs") %>%
+  {1 - .} %>%
+  as.dist() %>% 
+  hclust(method = "average") %T>%
+  plot %>%
+  dendro_data()
+
+dendro_plot_data <- 
+  left_join(plot_comp_dendro_data$segments, 
+            plot_comp_dendro_data$labels, 
+            by = c("x" = "x", "yend" = "y")) %>% 
+  separate(label, c("tissue", "species"), sep = "_", remove = FALSE) %>% 
+  mutate(tissue = str_to_sentence(tissue), species = str_to_sentence(species)) %>% 
+  mutate(species = factor(species, c("Human", "Rat")))
+
+left_plot <- 
+  dendro_plot_data %>%
+  ggplot() +
+  geom_segment(aes(x=y, y=x, xend=yend, yend=xend))+
+  # geom_rect(aes(xmin=0, ymin=x + 0.5, 
+  #               xmax=-0.02, ymax=xend - 0.5, 
+  #               fill = tissue), 
+  #           show.legend = F) +
+  geom_point(aes(
+      x = 0,
+      y = x,
+      shape = species,
+      fill = tissue
+    ),
+    color = "gray25",
+    alpha = 1,
+    size = 3,
+    stroke = 0.7
+  ) +
+  geom_text(aes(x=-0.02, y=x,
+                label = tissue),
+            hjust = 0,
+            show.legend = F) +
+  scale_shape_manual(values = shape_def ) +
+# scale_color_manual(values = pal) +
+  scale_fill_manual(values = pal, guide = "none") +
+   scale_x_reverse(
+     expand = expansion(0.5 ), 
+     position = "top")+
+   scale_y_continuous(expand = expansion(0.01)) +
+  xlab("1 - Spearman's rho") +
+  
+  theme(axis.text.y = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        legend.title=element_blank(),
+        plot.margin = unit(c(1,1,1,1), units = "mm"), 
+        panel.background = element_blank()) 
+left_plot
+ggsave("./final_plots/comparison/comparison_dendrogram.pdf", width = 6.5, height = 9 )
+
+```
+##Figure 7B - Cros species UMAP
+```{r}
+library(plotly)
+library(ggplotify)
+library(geomtextpath)
+
+comp_metadata <- read_csv("./data/final_data/comparison_metadata-init-1-0.csv")
+umap_meta <- comp_metadata %>% select(consensus_tissue_color, organ_color, comparison_tissue_name) %>% filter(comparison_tissue_name != "" ) %>% distinct()
+wide_data <- joined_atlas_comparison %>% 
+  select(-tissue, -species, -tmm) %>% 
+  spread(id, limma_log1p_tmm)
+seed <- 42
+filter_zero_sd = F
+n_epochs = 1000 
+n_neighbors = 15
+
+pca_res <-
+  wide_data %>%
+  #no log1p because limma value is already calculated from log scale value
+  column_to_rownames(colnames(wide_data)[1]) %>%
+  scale() %>%
+  t() %>%
+  pca(nPcs = dim(.)[1])
+
+pc_lim <-
+  which(pca_res@R2cum > 0.8)[1]
+
+pc_lim_sd <-
+  rev(which(pca_res@sDev > 1))[1]
+
+n_neighbors = 15
+set.seed(seed)
+umap_res <- pca_res@scores[, 1:pc_lim] %>%
+  uwot::umap(n_neighbors = n_neighbors,
+             n_epochs = n_epochs) %>%
+  as_tibble() %>%
+  set_names(paste0("UMAP", 1:ncol(.))) %>%
+  mutate(sample = rownames(pca_res@scores)) %>%
+  select(sample, everything()) %>%
+  separate(
+    sample,
+    into = c("tissue", "species"),
+    sep = "_",
+    remove = F
+  ) %>%
+  left_join(umap_meta, by = c("tissue" = "comparison_tissue_name"))
+
+organ_colors <-
+  umap_meta %>% select(comparison_tissue_name, consensus_tissue_color) %>% unique()
+pal <-  organ_colors$consensus_tissue_color
+pal <- setNames(pal, organ_colors$comparison_tissue_name)
+
+shape_def <- c(21, 22)
+shape_def <- setNames(shape_def, c("human", "rat"))
+
+
+# umap_res %>%  ggplot(aes(UMAP1, UMAP2,  color = organ_name)) +
+#    geom_point(alpha = 0.8) + scale_color_manual(values = pal)
+p <- umap_res %>%  
+  ggplot(aes(UMAP1, UMAP2)) +
+  geom_textpath(
+    aes(label = str_to_sentence(tissue)),
+    hjust = 0.5,
+    vjust = -0.3,
+    color = "gray20"
+  ) +
+  geom_point(
+    aes(fill = tissue, shape = species),
+    color = "gray25",
+    alpha = 1,
+    size = 2,
+    stroke = 0.7
+  ) +
+  guides(fill = "none") +
+  scale_fill_manual(values = pal) +
+  scale_shape_manual(values = shape_def) +
+  theme_classic() + theme(legend.text = element_text(size = 10),
+                          #legend.title =element_blank(), 
+                          legend.spacing.y = unit(-0.1, 'cm'),
+                          legend.spacing.x = unit(-0.01, 'cm')) +
+  guides(shape = guide_legend(ncol = 1, byrow = TRUE, title = "Species"))
+
+p
+
+
+
+
+
+if (include_many2many == TRUE & include_one2many == TRUE) {
+  comp_umap_file_name = paste0("./final_plots/comparison/",
+                               ortholog_data_from,
+                               "_umap.pdf")
+} else if (include_many2many == FALSE & include_one2many == TRUE) {
+  comp_umap_file_name = paste0("./final_plots/comparison/",
+                               ortholog_data_from,
+                               "_umap.pdf")
+} else if (include_many2many == FALSE &
+           include_one2many == FALSE) {
+  comp_umap_file_name = paste0("./final_plots/comparison/",
+                               ortholog_data_from,
+                               "_umap.pdf")
+}
+
+
+ggsave(comp_umap_file_name, height = 5.5, width = 6.5)
+
+```
+
+##Figure 7C - Cross species hypergeometric test
+```{r}
+#Based on Max Karlsson: https://github.com/maxkarlsson/Pig-Atlas/blob/master/scripts/functions_classification.R
+
+library(viridis)
+library(ggsci)
+
+
+
+class1 <- hpa_gene_classification(data = rat_tissue_comp %>% select(target_id, tissue, tmm), expression_col = "tmm", tissue_col = "tissue", gene_col = "target_id", enr_fold = 4, max_group_n = 5, det_lim = 1) %>% rename(ensrnog_id = gene)
+class2 <- hpa_gene_classification(data = hpa_comp %>% select(Gene, tissue, tmm), expression_col = "tmm", tissue_col = "tissue", gene_col = "Gene", enr_fold = 4, max_group_n = 5, det_lim = 1) %>% 
+  rename(ensg_id = gene)
+
+gene_col1 <- "ensrnog_id"
+gene_col2 <- "ensg_id"
+sep <- ";"
+
+class1_long <-
+  class1 %>%
+  select(gene1 = gene_col1, enriched_tissues) %>%
+  mutate(
+    enriched_tissues = ifelse(is.na(enriched_tissues),
+                              "not enriched",
+                              enriched_tissues),
+    enriched1 = T
+  ) %>%
+  separate_rows(enriched_tissues, sep = sep)
+
+class2_long <-
+  class2 %>%
+  select(gene2 = gene_col2, enriched_tissues) %>%
+  mutate(
+    enriched_tissues = ifelse(is.na(enriched_tissues),
+                              "not enriched",
+                              enriched_tissues),
+    enriched2 = T
+  ) %>%
+  separate_rows(enriched_tissues, sep = sep)
+
+tis_ <-
+  unique(c(class1_long$enriched_tissues,
+           class2_long$enriched_tissues)) %>%
+  sort()
+
+gene_orthologs <- homolog_data %>% select(1,2)
+
+overlap_hyper_all <- expand.grid(id1 = tis_,
+            id2 = tis_,
+            gene = 1:nrow(gene_orthologs)) %>%
+  as_tibble() %>%
+  left_join(gene_orthologs %>%
+              select(gene1 = gene_col1,
+                     gene2 = gene_col2) %>%
+              mutate(gene = row_number())) %>%
+  select(-gene) %>%
+  left_join(class1_long,
+            by = c("gene1", "id1" = "enriched_tissues")) %>%
+  left_join(class2_long,
+            by = c("gene2", "id2" = "enriched_tissues")) %>%
+  mutate(
+    enriched1 = ifelse(is.na(enriched1),
+                       F,
+                       enriched1),
+    enriched2 = ifelse(is.na(enriched2),
+                       F,
+                       enriched2)
+  ) %>%
+  group_by(id1, id2, enriched1, enriched2) %>%
+  count() %>%
+  group_by(id1, id2) %>%
+  summarise(
+    # q is the number of successes
+    q = sum(n[which(enriched1 & enriched2)]),
+    
+    # k is the number of tries - i.e. the number of genes that are elevated for either species
+    k = sum(n[which(enriched1 | enriched2)]),
+    
+    # m is the number of possible successes - i.e. the number of genes that are elevated for either
+    m = min(sum(n[which(enriched1)]),
+            sum(n[which(enriched2)])),
+    
+    # n is the population size - i.e. the number of genes
+    n = sum(n) - m
+  ) %>% 
+  mutate(p_value = phyper(q - 1, m, n, k, lower.tail = F)) %>%
+  mutate(p_value = ifelse(p_value == 0, .Machine$double.xmin, p_value),
+         adj_pval = p.adjust(p_value, method = "BH")) %>%
+  rename(rat_id = id1, 
+         human_id = id2)
+
+overlap_hyper_all %>% 
+  write_csv("./data/final_data/rat_human_class_hyper.csv")
+
+
+plot_order <- 
+  overlap_hyper_all %>% 
+  ungroup() %>%
+  mutate(rat_id = str_to_sentence(rat_id),
+         human_id = str_to_sentence(human_id)) %>%
+  filter(rat_id == human_id) %>%
+  arrange(adj_pval) %>%
+  pull(rat_id)
+
+
+stripped_theme <-
+  theme(panel.background = element_rect(fill = NA, colour = NA),
+        plot.background = element_rect(fill = NA, color = NA),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.key = element_rect(colour = NA),
+        #legend.position = "bottom",
+        #legend.direction = "horizontal",
+        legend.key.size= unit(0.3, "cm"),
+        legend.title = element_text(face="italic"),
+        axis.line = element_line(colour="black",size=0.5))
+
+
+overlap_hyper_all %>% 
+  group_by(rat_id, human_id) %>%
+  mutate(capped_p = min(c(-log10(adj_pval), 20))) %>%
+  ungroup() %>% 
+  mutate(rat_id = str_to_sentence(rat_id),
+         human_id = str_to_sentence(human_id)) %>%
+  mutate(rat_id = factor(rat_id, plot_order),
+         human_id = factor(human_id, plot_order)) %>%
+  ggplot(aes(human_id, rat_id, fill = capped_p)) +
+  geom_tile() + 
+  geom_tile(data = . %>% 
+              filter(adj_pval >= 0.05),
+            fill = "black") + 
+  scale_fill_viridis(option = "D", direction = 1, 
+                     name = "Adjusted p-value") + 
+  stripped_theme +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.2),
+        legend.position = "top") +
+  xlab("Human") + 
+  ylab("Rat")
+
+#ggsave("./final_plots/comparison/Overlap hyper heatmap elevated.pdf", width = 6, height = 6)  
+
+overlap_hyper_all %>% 
+  filter(human_id != "not enriched" & 
+           rat_id != "not enriched") %>%
+  ungroup() %>%
+  mutate(rat_id = str_to_sentence(rat_id),
+         human_id = str_to_sentence(human_id)) %>%
+  filter(adj_pval < 0.05) %>%
+  mutate(rat_id = factor(rat_id, plot_order),
+         human_id = factor(human_id, plot_order),
+         adj_pval = case_when(adj_pval < 1e-100 ~ 1e-100,
+                              T ~ adj_pval)) %>%
+  ggplot(aes(human_id, rat_id, fill = -log10(adj_pval), size = -log10(adj_pval))) +
+  geom_point(shape = 21, 
+             alpha = 0.8,
+             stroke = 0.2,
+             color = "black") + 
+  # scale_color_viridis(option = "E", direction = 1, 
+  #                    name = "Adjusted p-value") + 
+  scale_fill_gradientn(colors = ggsci::rgb_material(palette = "deep-orange")) +
+  scale_size_continuous(range = c(1, 6)) +
+  stripped_theme +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.2),
+        legend.position = "top", 
+        panel.grid.major = element_line(color = "gray90", size = 0.2)) +
+  xlab("Human") + 
+  ylab("Rat")
+
+ggsave("./final_plots/comparison/hypergeometric_comparison_tissue.pdf", width = 5, height = 5.5)  
+
+```
+
+##Figure 7D - Cross species gene annotation alluvial
+```{r}
+
+#classification rat
+classification_rat_comp <-
+  hpa_gene_classification(
+    data = joined_atlas_comparison %>% filter(species == "rat") %>% select(c(-id,-species,-limma_log1p_tmm)),
+    expression_col = "tmm",
+    tissue_col = "tissue",
+    gene_col = "mutual_id",
+    enr_fold = 4,
+    max_group_n = 5,
+    det_lim = 1
+  )
+
+rat_comp_tau <- calculate_tau_score(
+  joined_atlas_comparison %>% filter(species == "rat") %>% select(-id,-species,-limma_log1p_tmm)  %>%
+    spread(tissue, tmm) %>%
+    mutate_if(is.numeric, function(x) {
+      log10(x + 1)
+    }) %>%
+    column_to_rownames("mutual_id")
+)
+
+classification_rat_comp <- classification_rat_comp %>%
+  left_join(rat_comp_tau, by = c("gene" = "gene")) %>%
+  mutate(tau_score = ifelse(spec_category == "not detected", NA, tau_score)) %>%
+  mutate(species = "Rat")
+
+
+#classification human
+
+classification_human_comp <-
+  hpa_gene_classification(
+    data = joined_atlas_comparison %>% filter(species == "human") %>% select(c(-id,-species,-limma_log1p_tmm)),
+    expression_col = "tmm",
+    tissue_col = "tissue",
+    gene_col = "mutual_id",
+    enr_fold = 4,
+    max_group_n = 5,
+    det_lim = 1
+  )
+
+human_comp_tau <- calculate_tau_score(
+  joined_atlas_comparison %>% filter(species == "human") %>% select(-id,-species,-limma_log1p_tmm)  %>%
+    spread(tissue, tmm) %>%
+    mutate_if(is.numeric, function(x) {
+      log10(x + 1)
+    }) %>%
+    column_to_rownames("mutual_id")
+)
+
+classification_human_comp <- classification_human_comp %>%
+  left_join(rat_comp_tau, by = c("gene" = "gene")) %>%
+  mutate(tau_score = ifelse(spec_category == "not detected", NA, tau_score)) %>%
+  mutate(species = "Human")
+
+```
+
+
+```{r}
+alluvial_data_comp <- classification_rat_comp %>%
+  select(gene, spec_category) %>%
+  rename(Rat = spec_category) %>%
+  left_join(
+    classification_human_comp %>%
+      select(gene, spec_category) %>%
+      rename(Human = spec_category), 
+    by = "gene"
+  )
+
+
+width = 0.1
+
+alluv_1 <-
+  
+  alluvial_data_comp %>%
+  mutate(Rat = str_to_sentence(Rat),
+          Human = str_to_sentence(Human)) %>%
+  select(Rat, 
+         Human) %>%
+  mutate(row_n = row_number()) %>%
+  gather(bar, chunk, -row_n) %>%
+  mutate(color_vars = 1) %>%
+  group_by(row_n) %>%
+  mutate(chunk_color = chunk[match(c("Human",
+                                     "Rat")[color_vars], bar)]) %>% 
+  ungroup() %>%
+  
+  
+  mutate(chunk = factor(chunk, levels = c('Tissue enriched', 'Group enriched', 
+                                          'Tissue enhanced', 'Low tissue specificity', 
+                                          'Not detected')),
+         bar = factor(bar, levels = c("Human",
+                                      "Rat"))) %>%
+  
+  
+  ggplot(aes(x = bar, stratum = chunk, alluvium = row_n,
+             y = 1)) +
+  
+  geom_flow(aes(fill = chunk_color), 
+            show.legend = F, width = width,
+            knot.pos = 1/6) +
+  geom_stratum(aes(fill = chunk), 
+               show.legend = F, color = NA, width = width) +
+  
+  scale_x_discrete(expand = c(.1, .1), position = "top") +
+  scale_fill_manual(values = c(gene_category_pal)) + 
+  
+  
+  theme(axis.text.y = element_text(size = 18, face = "bold"),
+        axis.text.x = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.background = element_blank(), 
+        axis.title = element_blank()) +
+  coord_flip()
+
+# alluv_1
+
+flow_data <-
+  ggplot_build(alluv_1)$data[[1]] %>%
+  as_tibble() %>%
+  {
+    if ("side" %in% names(.)) {
+      .
+    } else{
+      mutate(.,
+             side = case_when(flow == "from" ~ "start",
+                              flow == "to" ~ "end"))
+    }
+  }
+
+
+
+stratum_data <- 
+  ggplot_build(alluv_1)$data[[2]]
+
+flow_data_labels <-
+  flow_data %>%
+  as_tibble() %>%
+  select(x, stratum, group, side, ymin, ymax) %>%
+  pivot_wider(names_from = side,
+              values_from = c(x, stratum, ymin, ymax)) %>%
+  mutate_at(
+    c(
+      "x_end",
+      "ymax_end",
+      "ymin_end",
+      "x_start",
+      "ymax_start",
+      "ymin_start"
+    ),
+    as.numeric
+  ) %>%
+  group_by(stratum_start, stratum_end, x_start, x_end) %>%
+  summarise(
+    y_end = (min(ymin_end) + max(ymax_end)) / 2,
+    y_start = (min(ymin_start) + max(ymax_start)) / 2,
+    size = max(ymax_start) - min(ymin_start)
+  )
+
+alluv_2 <- 
+  alluv_1 +
+  geom_text(data = flow_data_labels,
+            aes(x = x_start + width/2,
+                y = y_start, 
+                label = size), 
+            inherit.aes = F, 
+            size = 3,
+            angle = -90,
+            hjust = 1,
+            vjust = 0.5) +
+  geom_text(data = flow_data_labels,
+            aes(x = x_end - width/2,
+                y = y_end, 
+                label = size), 
+            inherit.aes = F, 
+            size = 3, 
+            angle = -90,
+            hjust = 0,
+            vjust = 0.5) +
+  
+  # Stratum label
+  
+  geom_text(data = stratum_data %>%
+              filter(x == 1),
+            aes(x = x - width/2,
+                y = y,
+                label = stratum),
+            size = 4, 
+            vjust = 1.5,
+            inherit.aes = F) + 
+  geom_text(data = stratum_data %>%
+              filter(x == 2),
+            aes(x = x + width/2,
+                y = y,
+                label = stratum),
+            size = 4, 
+            vjust = -0.5,
+            inherit.aes = F) + 
+  
+  geom_text(data = stratum_data,
+            aes(x = x, 
+                y = y,
+                label = ymax - ymin), 
+            size = 4, 
+            fontface = "bold",
+            color = "white",
+            inherit.aes = F)
+
+
+alluv_2
+
+if (include_many2many == TRUE & include_one2many == TRUE){
+  comp_alluv_file_name = paste0("./final_plots/comparison/",ortholog_data_from,"_comparison_all_alluvial.pdf")
+} else if (include_many2many == FALSE & include_one2many == TRUE){
+  comp_alluv_file_name = paste0("./final_plots/comparison/",ortholog_data_from,"_comparison_only_on2one2many_alluvial.pdf")
+} else if (include_many2many == FALSE & include_one2many == FALSE){
+  comp_alluv_file_name = paste0("./final_plots/comparison/",ortholog_data_from,"_comparison_only_one2one_alluvial.pdf")}
+
+ggsave(comp_alluv_file_name,width = 8, height = 3)
+
+```
+
+#Figure S1 - Brain Metadata alluvial plot
+```{r}
+#Function adapted from Max Karlsson
+multi_alluvial_plot <-
+  function(data,
+           vars,
+           chunk_levels,
+           pal,
+           color_by = c(1, 3, 3)) {
+    selvars = vars
+    
+    if (!is.null(names(vars))) {
+      vars = names(vars)
+    }
+    
+    alluv_1 <-
+      data %>%
+      ungroup() %>%
+      select(selvars) %>%
+      ungroup() %>%
+      mutate(row_n = row_number()) %>%
+      gather(bar, chunk,-row_n) %>%
+      left_join(tibble(bar = vars,
+                       color_vars = color_by),
+                by = "bar") %>%
+      group_by(row_n) %>%
+      mutate(chunk_color = chunk[match(vars[color_vars], bar)]) %>%
+      ungroup() %>%
+      
+      mutate(chunk = factor(chunk, levels = chunk_levels),
+             bar = factor(bar, levels = vars)) %>%
+      
+      
+      ggplot(aes(
+        x = bar,
+        stratum = chunk,
+        alluvium = row_n,
+        y = 1
+      )) +
+      
+      geom_flow(aes(fill = chunk_color),
+                show.legend = F) +
+      geom_stratum(aes(fill = chunk),
+                   show.legend = F, color = NA) +
+      
+      scale_x_discrete(expand = c(.1, .1), position = "top") +
+       scale_fill_manual(values = pal) +
+
+
+      theme(
+        axis.text.x = element_text(size = 18, face = "bold"),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_blank(),
+        axis.title = element_blank()
+      )
+
+
+    
+    
+    flow_data <-
+      ggplot_build(alluv_1)$data[[1]] %>%
+      as_tibble() %>%
+      {
+        if ("side" %in% names(.)) {
+          .
+        } else{
+          mutate(.,
+                 side = case_when(flow == "from" ~ "start",
+                                  flow == "to" ~ "end"))
+        }
+      }
+    
+    
+    stratum_data <-
+      ggplot_build(alluv_1)$data[[2]]
+    
+    flow_data_labels <-
+      flow_data %>%
+      as_tibble() %>%
+      
+      select(x, stratum, group, side, ymin, ymax) %>%
+      pivot_wider(names_from = side,
+                  values_from = c(x, stratum, ymin, ymax)) %>%
+      
+      mutate_at(
+        c(
+          "x_end",
+          "ymax_end",
+          "ymin_end",
+          "x_start",
+          "ymax_start",
+          "ymin_start"
+        ),
+        as.numeric
+      ) %>%
+      group_by(stratum_start, stratum_end, x_start, x_end) %>%
+      summarise(
+        y_end = (min(ymin_end) + max(ymax_end)) / 2,
+        y_start = (min(ymin_start) + max(ymax_start)) / 2,
+        size = max(ymax_start) - min(ymin_start)
+      )
+    
+    alluv_1 <-
+      alluv_1 +
+      # geom_text(
+      #   data = flow_data_labels,
+      #   aes(x = x_start + 1 / 6,
+      #       y = y_start,
+      #       label = size),
+      #   inherit.aes = F,
+      #   size = 3,
+      #   hjust = 0
+      # ) +
+      # geom_text(
+      #   data = flow_data_labels,
+      #   aes(x = x_end - 1 / 6,
+      #       y = y_end,
+      #       label = size),
+      #   inherit.aes = F,
+      #   size = 3,
+      #   hjust = 1
+      # ) +
+      # 
+      # Stratum label
+      geom_text(
+        data = stratum_data,
+        aes(
+          x = x,
+          y = y,
+          label = paste(stratum#, 
+                       # paste("[", ymax - ymin, "]", sep = "")
+                        )
+        ),
+        size = 4,
+        inherit.aes = F
+      )
+                
+    
+    alluv_1
+  }
+```
+
+```{r}
+metadata_b <- metadata %>% filter(organ_name =="Brain")
+
+t_names <- metadata_b$tissue_name %>% unique()
+r_names <- metadata_b$region_tissue_name %>% unique()
+c_names <- metadata_b$consensus_tissue_name %>% unique()
+o_names <- metadata_b$organ_name %>% unique()
+
+t_colors <- metadata_b %>% select(tissue_name, tissue_color) %>% unique() %>% rename (chunk = tissue_name, color = tissue_color)
+r_colors <- metadata_b %>% select(region_tissue_name, region_tissue_color) %>% unique() %>% rename (chunk = region_tissue_name, color = region_tissue_color)
+c_colors <- metadata_b %>% select(consensus_tissue_name, consensus_tissue_color) %>% unique() %>% rename (chunk = consensus_tissue_name, color = consensus_tissue_color)
+o_colors <- metadata_b %>% select(organ_name, organ_color) %>% unique() %>% rename (chunk = organ_name, color = organ_color)
+
+bind_colors <- bind_rows(t_colors, r_colors, o_colors) %>% unique() %>% arrange(chunk) %>% mutate(row_n = row_number())
+pal <-  bind_colors$color
+pal <- setNames(pal, bind_colors$chunk)
+
+data = metadata_b
+vars = c("tissue_name", "region_tissue_name", "organ_name")
+chunk_levels = c(t_names, r_names, o_names) %>% unique()
+color_by = c(1, 3, 3)
+
+multi_alluvial_plot(data = metadata_b, vars = vars, chunk_levels = chunk_levels, pal = pal, color_by = c(1, 3, 3))
+
+ggsave("final_plots/alluvial/brain-tco-1_p.pdf", height = 7, width = 10)
+```
+
+
+#Figure S2 - Normalisation comparison TPM vs nTPM (TMM)
+```{r}
+tpm_sample <-read_csv("./data/final_data/curated_pTPM_rattus_norvegicus_v103.csv")
+
+
+sample_subset_ID <- metadata[match(unique(metadata$consensus_tissue_name), metadata$consensus_tissue_name),] %>% select(ID)
+sample_subset_tmm <- tmm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tmm, -1)
+sample_subset_tpm <- tpm_sample %>% select(target_id, sample_subset_ID$ID) %>% gather(sample, tpm, -1)
+
+# plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+#   mutate(log1p_tmm = log10(tmm + 1), log1p_tpm = log10(tpm +1)) %>% select(-tmm, -tpm) %>% 
+#   gather(expression_type, expression, -1, -2) %>% 
+#   left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+plot_data <- left_join(sample_subset_tmm, sample_subset_tpm, by = c("target_id", "sample")) %>%
+  gather(expression_type, expression, -1, -2) %>% mutate_if(is.numeric, function(x) {
+                log10(x + 1)
+              }) %>% 
+  left_join(metadata %>% select(ID, tissue_name, consensus_tissue_name), by = c("sample" = "ID"))
+
+
+pal_tbl <- metadata %>% select(consensus_tissue_name, consensus_tissue_color) %>% distinct()
+pal <- pal_tbl %>% pull(consensus_tissue_color)
+pal <- setNames(pal, pal_tbl %>% pull(consensus_tissue_name))
+
+
+ggplot(data = plot_data, aes(x = expression, y =sample, fill = consensus_tissue_name)) +
+  geom_boxplot(draw_quantiles = 0.5, outlier.size = 0.5, outlier.alpha = 0.3)+
+  facet_wrap(~expression_type)+
+  scale_fill_manual(values = pal) +
+  theme(legend.position = "none", 
+        axis.title = element_blank())
+
+ggsave("./final_plots/tpm_tmm_comp_boxplot.pdf", width=7, height = 12)
+
+```
+
+#Figure S3 - Spearman heatmap (tissye type level)
+```{r}
+
+##Spearman's roh heatmap at tissue type level
+if(file.exists("./data/final_data/spearman_corr_tissues.csv")) {
+  tissue_tmm_spearman <- read_csv("./data/final_data/spearman_corr_tissues.csv")
+} else {
+  tissue_tmm_spearman <-  tmm_tissue %>%
+    spread(tissue_name, tmm) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "tissue_name")
+  write_csv(as.data.frame(tissue_tmm_spearman) %>% as_tibble(rownames = "tissue_name"),"./data/final_data/spearman_corr_tissues.csv")
+}
+
+tissue_tmm_spearman %>% 
+  column_to_rownames("tissue_name") %>% 
+  pheatmap(
+   # clustering_method = "ward.D2",
+    cellheight = 8,
+    cellwidth = 8, 
+    border_color = NA,
+    color = viridis::inferno(20, direction = -1),
+    show_rownames = FALSE, 
+    ) %>% 
+  as.ggplot()
+
+#ggsave("./final_plots/data_presentation/spearman_corr_tissue.pdf", height = 20, width = 20)
+
+
+```
+
+#Figure S4 - Comparison Pheatmap
+```{r}
+if(file.exists("./data/final_data/spearman_corr_tissues.csv")) {
+  tissue_tmm_spearman <- read_csv("./data/final_data/spearman_corr_tissues.csv")
+} else {
+  tissue_tmm_spearman <-  tmm_tissue %>%
+    spread(tissue_name, tmm) %>%
+    column_to_rownames("target_id") %>%
+    cor(method = "spearman", use = "pairwise.complete.obs") %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "tissue_name")
+  write_csv(as.data.frame(tissue_tmm_spearman) %>% as_tibble(rownames = "tissue_name"),"./data/final_data/spearman_corr_tissues.csv")
+}
+
+
+
+joined_atlas_comparison_pheat_data <-  joined_atlas_comparison %>%
+  select(mutual_id, id,limma_log1p_tmm ) %>%  
+  spread(id, limma_log1p_tmm) %>% 
+  column_to_rownames("mutual_id") %>% 
+  cor(method = "spearman", use = "pairwise.complete.obs") %>%
+  as.data.frame() %>%
+  as_tibble(rownames = "tissue_name")
+
+joined_atlas_comparison_pheat_data %>% 
+  column_to_rownames("tissue_name") %>% 
+  pheatmap(
+   # clustering_method = "ward.D2",
+    cellheight = 8,
+    cellwidth = 8, 
+    border_color = NA,
+    color = viridis::inferno(20, direction = -1),
+    show_rownames = FALSE, 
+    ) %>% 
+  as.ggplot()
+
+ggsave("./final_plots/comparison/pheatmap.pdf", width = 20, height = 20)
+
+```
+
