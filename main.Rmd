@@ -246,7 +246,7 @@ ggplot() +
   scale_color_manual(values = pal) +
   theme_void() +
   theme(axis.text.x = element_text())
-#ggsave("final_plots/tissues.pdf", height = 7, width = 4)
+ggsave("final_plots/tissues.pdf", height = 7, width = 4)
 
 ```
 
@@ -389,7 +389,7 @@ circular_dendrogram_retinastyle_2(
   arc_strength = 0.4, 
   default_color = "gray80")
 
-#ggsave("./final_plots/data_presentation/retinagram_all_tissue_clust_ward.pdf", width = 6, height = 6)
+ggsave("./final_plots/data_presentation/retinagram_all_tissue_clust_ward.pdf", width = 6, height = 6)
 
 ```
 
@@ -422,7 +422,7 @@ consensus_tmm_spearman %>%
     show_rownames = FALSE, 
     ) %>% 
   as.ggplot()
-#ggsave("./final_plots/data_presentation/spearman_corr_consensus_tissue.pdf", height = 10, width = 10)
+ggsave("./final_plots/data_presentation/spearman_corr_consensus_tissue.pdf", height = 10, width = 10)
 
 ```
 
@@ -548,7 +548,7 @@ plot_data %>%
                           legend.spacing.x = unit(-0.01, 'cm')) +
   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
 
-#ggsave("./final_plots/data_presentation/brain_w_all_sample_pca.pdf", width = 5, height = 5)
+ggsave("./final_plots/data_presentation/brain_w_all_sample_pca.pdf", width = 5, height = 5)
 
 
 ```
@@ -591,7 +591,7 @@ plot_data %>%
                           legend.spacing.x = unit(-0.01, 'cm')) +
   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
 
-#ggsave("./final_plots/data_presentation/brain_sample_pca.pdf", width = 5, height = 5)
+ggsave("./final_plots/data_presentation/brain_sample_pca.pdf", width = 5, height = 5)
 
 
 
@@ -660,7 +660,7 @@ umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
                           legend.spacing.x = unit(-0.01, 'cm')) +
   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
 
-#ggsave("./final_plots/data_presentation/sample_umap_euclidean.pdf", width = 5, height = 5.5)
+ggsave("./final_plots/data_presentation/sample_umap_euclidean.pdf", width = 5, height = 5.5)
 ```
 
 ##Figure 2C - Brain Umap Plot
@@ -731,7 +731,7 @@ umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
                           legend.spacing.x = unit(-0.01, 'cm')) +
   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) 
 
-#ggsave("./final_plots/data_presentation/sample_focus_brain_umap_euclidean.pdf", width = 5, height = 5.5)
+ggsave("./final_plots/data_presentation/sample_focus_brain_umap_euclidean.pdf", width = 5, height = 5.5)
 
 ```
 ###Extra UMAP plot not in report
@@ -799,7 +799,7 @@ umap_res %>%  ggplot(aes(UMAP1, UMAP2)) +
                           legend.spacing.x = unit(-0.01, 'cm')) +
   guides(fill = guide_legend(ncol = 1, byrow = TRUE)) 
 
-#ggsave("./final_plots/data_presentation/sample_brain_umap_euclidean_l.pdf", width = 5.5, height = 3)
+ggsave("./final_plots/data_presentation/sample_brain_umap_euclidean_l.pdf", width = 5.5, height = 3)
 ```
 ##Figure 2D -  grouped sample to sample correlation plots
 ```{r}
@@ -899,7 +899,7 @@ p4 <- correlation_to_same_tissue_by_tissue %>%
 
 p1 / p2 / p3 / p4 + plot_layout(heights = c(1, 1, 1, 15))
 
-#ggsave("./final_plots/data_presentation/spearman_corr_sample_vs_tissue_organ.pdf", height = 14, width = 4)
+ggsave("./final_plots/data_presentation/spearman_corr_sample_vs_tissue_organ.pdf", height = 14, width = 4)
 ```
 
 #Specificity and distribution annotation
@@ -1464,7 +1464,7 @@ classification_consensus %>%
   scale_x_continuous(expand = expansion(mult = 0, add = 0)) +
   ggtitle("Specificity category per consensus tissue") 
 
-#ggsave("./final_plots/classification/consensus_tissue_specificity.pdf", height = 7, width = 5.5)
+ggsave("./final_plots/classification/consensus_tissue_specificity.pdf", height = 7, width = 5.5)
 ```
 
 
@@ -2146,7 +2146,7 @@ ggplot() +
   scale_color_manual(values = pal) +
   theme_void() +
   theme(axis.text.x = element_text())
-#ggsave("final_plots/comparison/comparison_tissues_rat.pdf", height = 5, width = 4)
+ggsave("final_plots/comparison/comparison_tissues_rat.pdf", height = 5, width = 4)
 ```
 ```{r}
 comparison_colors_tbl <- rbind(
@@ -2254,7 +2254,7 @@ ggplot() +
   scale_color_manual(values = pal) +
   theme_void() +
   theme(axis.text.x = element_text())
-#ggsave("final_plots/comparison/comparison_tissues_human_rev.pdf", height = 5, width = 4)
+ggsave("final_plots/comparison/comparison_tissues_human_rev.pdf", height = 5, width = 4)
 
 ```
 
@@ -3133,7 +3133,7 @@ tissue_tmm_spearman %>%
     ) %>% 
   as.ggplot()
 
-#ggsave("./final_plots/data_presentation/spearman_corr_tissue.pdf", height = 20, width = 20)
+ggsave("./final_plots/data_presentation/spearman_corr_tissue.pdf", height = 20, width = 20)
 
 
 ```
@@ -3175,6 +3175,10 @@ joined_atlas_comparison_pheat_data %>%
   as.ggplot()
 
 ggsave("./final_plots/comparison/pheatmap.pdf", width = 20, height = 20)
+
+```
+```{r}
+sessionInfo()
 
 ```
 
